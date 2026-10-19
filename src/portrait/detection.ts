@@ -1,3 +1,4 @@
+import type { PortraitDetailMasks } from './retouch';
 import type { FaceLandmarker } from '@mediapipe/tasks-vision';
 
 export type PortraitPoint = { x: number; y: number };
@@ -201,4 +202,86 @@ export function createFaceSkinMask(face: PortraitFace, width: number, height: nu
     mask[(y + top) * width + x + left] = Math.round(255 * distances[i] / radius);
   }
   return mask;
+}
+
+
+const INNER_LIPS = [78,95,88,178,87,14,317,402,318,324,308,415,310,311,312,13,82,81,80,191];
+
+/** Inward feathering never adds pixels outside the geometric feature. */
+function featherDetail(mask: Uint8ClampedArray, width: number, height: number, radius: number): void {
+  let left = width, top = height, right = -1, bottom = -1;
+  for (let i = 0; i < mask.length; i++) if (mask[i]) {
+    const x = i % width, y = Math.floor(i / width);
+    left = Math.min(left, x); right = Math.max(right, x);
+    top = Math.min(top, y); bottom = Math.max(bottom, y);
+  }
+  if (right < 0) return;
+  left = Math.max(0, left - 1); top = Math.max(0, top - 1);
+  right = Math.min(width - 1, right + 1); bottom = Math.min(height - 1, bottom + 1);
+  const rw = right - left + 1, rh = bottom - top + 1;
+  const distances = new Float32Array(rw * rh);
+  for (let y = 0; y < rh; y++) for (let x = 0; x < rw; x++) {
+    const i = y * rw + x;
+    if (!mask[(y + top) * width + x + left]) continue;
+    distances[i] = Math.min(radius, x ? distances[i - 1] + 1 : 1, y ? distances[i - rw] + 1 : 1);
+  }
+  for (let y = rh - 1; y >= 0; y--) for (let x = rw - 1; x >= 0; x--) {
+    const i = y * rw + x;
+    if (!distances[i]) continue;
+    distances[i] = Math.min(distances[i], x + 1 < rw ? distances[i + 1] + 1 : 1, y + 1 < rh ? distances[i + rw] + 1 : 1);
+    mask[(y + top) * width + x + left] = Math.round(255 * distances[i] / radius);
+  }
+}
+
+/**
+ * Color-only feature zones from the existing face mesh. Inner-mouth geometry
+ * merely limits the candidate region: retouching additionally selects bright,
+ * near-neutral teeth/eye whites, so lips, tongue, pupils and irises stay intact.
+ */
+export function createFaceDetailMasks(face: PortraitFace, width: number, height: number): PortraitDetailMasks {
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1 || width * height > 80_000_000) throw new Error('人像蒙版尺寸无效。');
+  if (face.landmarks.length < 468 || !face.landmarks.every(point => Number.isFinite(point.x) && Number.isFinite(point.y))) throw new Error('人像关键点不完整，请重新识别。');
+  const details: PortraitDetailMasks = {
+    underEyes: new Uint8ClampedArray(width * height), teeth: new Uint8ClampedArray(width * height),
+    eyes: new Uint8ClampedArray(width * height), lips: new Uint8ClampedArray(width * height),
+  };
+  const points = face.landmarks;
+  for (const indices of [LEFT_EYE, RIGHT_EYE]) {
+    fillPolygon(details.eyes, width, height, polygon(points, indices, width, height, 0.88), 255);
+    // Lower lid ordered corner-to-corner; the normal follows head tilt.
+    const lower = polygon(points, indices.slice(0, 9), width, height);
+    const first = lower[0], last = lower[lower.length - 1];
+    const length = Math.hypot(last.x - first.x, last.y - first.y);
+    if (length > 0) {
+      let nx = -(last.y - first.y) / length, ny = (last.x - first.x) / length;
+      if (ny < 0) { nx = -nx; ny = -ny; }
+      const band = lower.slice(1, -1);
+      const start = length * 0.1, depth = length * 0.4;
+      fillPolygon(details.underEyes, width, height, [
+        ...band.map(p => ({ x: p.x + nx * start, y: p.y + ny * start })),
+        ...band.slice().reverse().map(p => ({ x: p.x + nx * depth, y: p.y + ny * depth })),
+      ], 255);
+    }
+  }
+  // The iris rings in the 478-point mesh receive an expanded hard exclusion.
+  // Models with only 468 points use a conservative central-eye exclusion.
+  for (const [eye, ring] of [[LEFT_EYE, [469,470,471,472]], [RIGHT_EYE, [474,475,476,477]]] as const) {
+    if (points.length >= 478) {
+      fillPolygon(details.eyes, width, height, polygon(points, [...ring], width, height, 1.3), 0);
+    } else {
+      const shape = polygon(points, [...eye], width, height);
+      const cx = shape.reduce((sum, p) => sum + p.x / shape.length, 0), cy = shape.reduce((sum, p) => sum + p.y / shape.length, 0);
+      const radius = (Math.max(...shape.map(p => p.y)) - Math.min(...shape.map(p => p.y))) * 0.65;
+      fillPolygon(details.eyes, width, height, Array.from({ length: 16 }, (_, i) => ({ x: cx + Math.cos(i * Math.PI / 8) * radius, y: cy + Math.sin(i * Math.PI / 8) * radius })), 0);
+    }
+  }
+  fillPolygon(details.teeth, width, height, polygon(points, INNER_LIPS, width, height, 0.9), 255);
+  fillPolygon(details.lips, width, height, polygon(points, LIPS, width, height, 0.96), 255);
+  fillPolygon(details.lips, width, height, polygon(points, INNER_LIPS, width, height, 1.08), 0);
+  // Under-eye finishing stays on real face skin, outside the eye/brow holes.
+  const skin = createFaceSkinMask(face, width, height);
+  for (let i = 0; i < skin.length; i++) if (!skin[i]) details.underEyes[i] = 0;
+  const radius = Math.min(5, Math.max(1, face.bounds.width * width * 0.012));
+  for (const mask of Object.values(details)) featherDetail(mask, width, height, radius);
+  return details;
 }

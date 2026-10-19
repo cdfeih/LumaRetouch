@@ -53,8 +53,8 @@ const blockedRequests = [];
 
 async function check(name, action) {
   const started = Date.now();
-  await action();
-  checks.push({ name, passed: true, elapsedMs: Date.now() - started });
+  const evidence = await action();
+  checks.push({ name, passed: true, elapsedMs: Date.now() - started, ...evidence });
   process.stdout.write(`PASS ${name}\n`);
 }
 
@@ -223,9 +223,66 @@ try {
     await page.screenshot({ path: path.join(outputDir, 'local-natural-retouch.png'), fullPage: true });
   });
 
+  await check('Electron file:// 本地 Pose 定位与 warp Worker 身体塑形可应用并归零恢复', async () => {
+    assert.match(page.url(), /^file:/);
+    await page.getByTestId('tool-natural').click();
+    const poseJpeg = (await readFile(path.join(root, 'tests/fixtures/mediapipe-pose.jpg'))).toString('base64');
+    const posePng = await page.evaluate(async base64 => {
+      const image = new Image(); image.src = `data:image/jpeg;base64,${base64}`; await image.decode();
+      const canvas = document.createElement('canvas'); canvas.width = image.width; canvas.height = image.height;
+      canvas.getContext('2d').drawImage(image, 0, 0);
+      return canvas.toDataURL('image/png').split(',')[1];
+    }, poseJpeg);
+    await page.getByTestId('photo-input').setInputFiles({ name: 'desktop-pose.png', mimeType: 'image/png', buffer: Buffer.from(posePng, 'base64') });
+    const before = await currentImage(), cornerBefore = await readPixel(before), callsBefore = requests.length;
+    await page.getByRole('tab', { name: '身体塑形', exact: true }).click();
+    await page.getByRole('button', { name: '识别人像与身体', exact: true }).click();
+    await page.getByRole('button', { name: '重新识别身体', exact: true }).waitFor({ timeout: 45000 });
+    await waitForPhoto();
+    assert.ok(await page.locator('.portrait-person').count() >= 2);
+    await page.getByRole('button', { name: '全部归零', exact: true }).click();
+    const waist = page.getByRole('slider', { name: '瘦腰', exact: true });
+    assert.equal(await waist.isEnabled(), true);
+    await waist.fill('75');
+    await page.getByRole('button', { name: '应用人像精修', exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('.document-tag')?.textContent === '1 次编辑', undefined, { timeout: 30000 });
+    const after = await currentImage();
+    const difference = async (first, second) => page.evaluate(async ({ first, second }) => {
+      const decode = async source => {
+        const image = new Image(); image.src = source; await image.decode();
+        const canvas = document.createElement('canvas'); canvas.width = image.width; canvas.height = image.height;
+        const context = canvas.getContext('2d'); context.drawImage(image, 0, 0);
+        return context.getImageData(0, 0, canvas.width, canvas.height).data;
+      };
+      const a = await decode(first), b = await decode(second);
+      if (a.length !== b.length) throw new Error('身体塑形改变了原图尺寸');
+      let changed = 0;
+      for (let i = 0; i < a.length; i += 4) if ([0, 1, 2, 3].some(channel => a[i + channel] !== b[i + channel])) changed++;
+      return changed;
+    }, { first, second });
+    const changedPixels = await difference(before, after);
+    assert.ok(changedPixels > 100, `瘦腰没有产生足够的实际像素变化：${changedPixels}`);
+    assert.deepEqual(await readPixel(after), cornerBefore);
+    await page.screenshot({ path: path.join(outputDir, 'local-body-warp.png'), fullPage: true });
+    await page.getByRole('button', { name: '本组归零', exact: true }).filter({ visible: true }).click();
+    await page.getByRole('button', { name: '应用人像精修', exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('.document-tag')?.textContent === '2 次编辑', undefined, { timeout: 30000 });
+    assert.equal(await difference(before, await currentImage()), 0, '塑形归零必须恢复基准原像素');
+    assert.equal(requests.length, callsBefore, '本地身体塑形不能请求云端模型');
+    return { changedPixels, resetDifference: 0, modelCalls: 0 };
+  });
+
+  // MediaPipe's upstream logger flushes on a delayed timer. Keep the real
+  // renderer alive beyond one minute so an accidental logger reintroduction is
+  // observed rather than hidden by closing the app immediately after inference.
+  const telemetryObservationStarted = Date.now();
+  process.stdout.write('等待 61 秒，验证本地模型没有延迟外网上报…\n');
+  for (const interval of [30_500, 30_500]) await new Promise(resolve => setTimeout(resolve, interval));
+  const telemetryObservationMs = Date.now() - telemetryObservationStarted;
+  assert.ok(telemetryObservationMs >= 61_000);
   assert.deepEqual(rendererErrors, []);
   assert.deepEqual(blockedRequests, []);
-  await writeFile(path.join(outputDir, 'report.json'), JSON.stringify({ passed: true, packaged: Boolean(executablePath), executablePath, externalModelCalls: 0, requests, canceledRequests, rendererErrors, blockedRequests, checks }, null, 2));
+  await writeFile(path.join(outputDir, 'report.json'), JSON.stringify({ passed: true, packaged: Boolean(executablePath), executablePath, externalModelCalls: 0, telemetryObservationMs, requests, canceledRequests, rendererErrors, blockedRequests, checks }, null, 2));
   process.stdout.write(`真实 Electron 验收通过；报告：${outputDir}\n`);
 } catch (error) {
   if (page) await page.screenshot({ path: path.join(outputDir, 'failure.png'), fullPage: true }).catch(() => {});

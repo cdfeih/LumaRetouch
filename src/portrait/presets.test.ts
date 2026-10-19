@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { deletePortraitPreset, loadPortraitPresets, PRESET_STORAGE_KEY, savePortraitPreset } from './presets';
 import type { NaturalRetouchSettings } from './retouch';
+import { normalizePortraitSettings } from './settings';
 
 const settings: NaturalRetouchSettings = { smoothing: 30, blemish: 35, evenness: 20, brightening: 10, shine: 0 };
 function memoryStorage() {
@@ -12,14 +13,14 @@ describe('个人精修预设', () => {
   it('重新加载恢复参数，保存白名单中不包含照片、人物或密钥', () => {
     const storage = memoryStorage();
     const preset = savePortraitPreset(' 我的自然肤色 ', { ...settings, apiKey: 'do-not-store', photo: 'private-photo' } as NaturalRetouchSettings, storage)[0];
-    expect(loadPortraitPresets(storage)).toEqual([{ ...preset, name: '我的自然肤色', settings }]);
+    expect(loadPortraitPresets(storage)).toEqual([{ ...preset, name: '我的自然肤色', settings: normalizePortraitSettings(settings) }]);
     expect(storage.getItem(PRESET_STORAGE_KEY)).not.toContain('do-not-store');
     expect(storage.getItem(PRESET_STORAGE_KEY)).not.toContain('private-photo');
   });
   it('同名保存更新原预设，删除后刷新不再恢复', () => {
     const storage = memoryStorage();
     const first = savePortraitPreset('自然', settings, storage)[0];
-    expect(savePortraitPreset('自然', { ...settings, brightening: 40 }, storage)).toEqual([{ ...first, settings: { ...settings, brightening: 40 } }]);
+    expect(savePortraitPreset('自然', { ...settings, brightening: 40 }, storage)).toEqual([{ ...first, settings: normalizePortraitSettings({ ...settings, brightening: 40 }) }]);
     expect(deletePortraitPreset(first.id, storage)).toEqual([]);
     expect(loadPortraitPresets(storage)).toEqual([]);
   });
@@ -38,5 +39,14 @@ describe('个人精修预设', () => {
     storage.setItem = () => { throw new Error('QuotaExceededError'); };
     expect(() => savePortraitPreset('失败', settings, storage)).toThrow('未能保存');
     expect(() => deletePortraitPreset('id', storage)).toThrow('未能保存');
+  });
+  it('兼容五参数旧预设，新增塑形默认零且可保存负向肩宽和下巴参数', () => {
+    const storage = memoryStorage();
+    storage.setItem(PRESET_STORAGE_KEY, JSON.stringify([{ id: 'old', name: '旧自然', settings }]));
+    expect(loadPortraitPresets(storage)[0].settings).toMatchObject({ faceSlim: 0, armSlim: 0, darkCircles: 0, warmth: 0 });
+    const next = normalizePortraitSettings({ ...settings, chinLength: -25, shoulderWidth: -20, armSlim: 30 });
+    savePortraitPreset('塑形', next, storage);
+    expect(loadPortraitPresets(storage)[1].settings).toMatchObject({ chinLength: -25, shoulderWidth: -20, armSlim: 30 });
+    expect(() => savePortraitPreset('越界', { ...next, armSlim: 101 }, storage)).toThrow('参数无效');
   });
 });

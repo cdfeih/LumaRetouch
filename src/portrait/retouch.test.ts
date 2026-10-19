@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { DEFAULT_NATURAL_SETTINGS, retouchPortraitPixels } from './retouch'
-import type { NaturalRetouchSettings } from './retouch'
+import type { NaturalRetouchSettings, PortraitDetailMasks } from './retouch'
 
 const ZERO: NaturalRetouchSettings = { smoothing: 0, blemish: 0, evenness: 0, brightening: 0, shine: 0 }
 const ALL: NaturalRetouchSettings = { smoothing: 100, blemish: 100, evenness: 100, brightening: 100, shine: 100 }
@@ -140,5 +140,74 @@ describe('natural local portrait retouching', () => {
     expect(() => retouchPortraitPixels(source, 4, 3, [])).toThrow('尺寸')
     expect(() => retouchPortraitPixels(source, 3, 3, [{ mask: new Uint8ClampedArray(8), settings: ALL }])).toThrow('选区尺寸')
     expect(() => retouchPortraitPixels(source, 3, 3, [], new Uint8ClampedArray(8))).toThrow('保护区尺寸')
+  })
+})
+
+
+function detailMasks(length: number): PortraitDetailMasks {
+  return { underEyes: new Uint8ClampedArray(length), teeth: new Uint8ClampedArray(length), eyes: new Uint8ClampedArray(length), lips: new Uint8ClampedArray(length) }
+}
+
+describe('local portrait complexion and feature finishing', () => {
+  it('keeps all added controls opt-in and preserves the natural preset strengths', () => {
+    expect([DEFAULT_NATURAL_SETTINGS.smoothing, DEFAULT_NATURAL_SETTINGS.blemish, DEFAULT_NATURAL_SETTINGS.evenness, DEFAULT_NATURAL_SETTINGS.brightening, DEFAULT_NATURAL_SETTINGS.shine]).toEqual([28, 24, 20, 16, 12])
+    for (const key of ['warmth', 'deYellow', 'deRedness', 'rosiness', 'darkCircles', 'teethWhitening', 'eyeWhitening', 'lipColor'] as const) expect(DEFAULT_NATURAL_SETTINGS[key]).toBe(0)
+    const source = photo(2, 1), details = detailMasks(2)
+    for (const mask of Object.values(details)) mask.fill(255)
+    expect(retouchPortraitPixels(source, 2, 1, [{ mask: new Uint8ClampedArray(2), details, settings: { ...ZERO, warmth: 0, deYellow: 0, deRedness: 0, rosiness: 0, darkCircles: 0, teethWhitening: 0, eyeWhitening: 0, lipColor: 0 } }])).toEqual(source)
+  })
+
+  it('offers reversible temperature and separate yellow, redness and rosy color changes only on face skin', () => {
+    const source = photo(3, 1, [190, 150, 100]), mask = new Uint8ClampedArray([255, 0, 255]), protection = new Uint8ClampedArray([0, 0, 1])
+    const render = (extra: Partial<NaturalRetouchSettings>) => retouchPortraitPixels(source, 3, 1, [{ mask, settings: { ...ZERO, ...extra } }], protection)
+    const warm = render({ warmth: 100 }), cool = render({ warmth: -100 })
+    expect(warm[0] - warm[2]).toBeGreaterThan(source[0] - source[2])
+    expect(cool[0] - cool[2]).toBeLessThan(source[0] - source[2])
+    const yellow = render({ deYellow: 100 })
+    expect(Math.min(yellow[0], yellow[1]) - yellow[2]).toBeLessThan(Math.min(source[0], source[1]) - source[2])
+    const red = render({ deRedness: 100 })
+    expect(red[0] - (red[1] + red[2]) / 2).toBeLessThan(source[0] - (source[1] + source[2]) / 2)
+    const rosy = render({ rosiness: 100 })
+    expect(rosy[0] - rosy[1]).toBeGreaterThan(source[0] - source[1])
+    for (const output of [warm, cool, yellow, red, rosy]) {
+      expect(Math.abs(light(output, 0) - light(source, 0))).toBeLessThan(1)
+      expect(output.slice(4)).toEqual(source.slice(4))
+    }
+  })
+
+  it('lifts a dark under-eye skin band without changing eyes or adjacent cheek pixels', () => {
+    const source = photo(5, 5), mask = new Uint8ClampedArray(25).fill(255), details = detailMasks(25)
+    source.set([110, 90, 85, 255], 12 * 4); details.underEyes[12] = 255
+    source.set([40, 32, 25, 255], 7 * 4); mask[7] = 0; details.underEyes[7] = 255
+    const output = retouchPortraitPixels(source, 5, 5, [{ mask, details, settings: { ...ZERO, darkCircles: 100 } }])
+    expect(light(output, 48)).toBeGreaterThan(light(source, 48))
+    for (let pixel = 0; pixel < 25; pixel++) if (pixel !== 12) expect(output.slice(pixel * 4, pixel * 4 + 4)).toEqual(source.slice(pixel * 4, pixel * 4 + 4))
+  })
+
+  it('whitens actual bright neutral teeth, rejects tongue/lips/dark mouth and works outside skin masks', () => {
+    const source = new Uint8ClampedArray([210, 200, 150, 255, 190, 65, 85, 255, 35, 30, 25, 255, 200, 185, 175, 123])
+    const details = detailMasks(4); details.teeth.fill(255)
+    const output = retouchPortraitPixels(source, 4, 1, [{ mask: new Uint8ClampedArray(4), details, settings: { ...ZERO, teethWhitening: 100 } }])
+    expect(light(output, 0)).toBeGreaterThan(light(source, 0))
+    expect(output[0] - output[2]).toBeLessThan(source[0] - source[2])
+    expect(output.slice(4, 12)).toEqual(source.slice(4, 12))
+    expect(output[15]).toBe(123)
+  })
+
+  it('brightens eye whites while preserving dark pupils, iris holes, eye edges and protection alpha=1', () => {
+    const source = new Uint8ClampedArray([185, 190, 185, 255, 30, 32, 28, 255, 180, 195, 200, 255, 175, 180, 175, 255])
+    const details = detailMasks(4); details.eyes.set([255, 255, 0, 255])
+    const output = retouchPortraitPixels(source, 4, 1, [{ mask: new Uint8ClampedArray(4), details, settings: { ...ZERO, eyeWhitening: 100 } }], new Uint8ClampedArray([0, 0, 0, 1]))
+    expect(light(output, 0)).toBeGreaterThan(light(source, 0))
+    expect(output.slice(4)).toEqual(source.slice(4))
+  })
+
+  it('adjusts only pink lip color and retains the mouth opening and neutral non-lip pixels', () => {
+    const source = new Uint8ClampedArray([180, 70, 90, 255, 180, 70, 90, 255, 100, 100, 100, 255])
+    const details = detailMasks(3); details.lips.set([255, 0, 255])
+    const output = retouchPortraitPixels(source, 3, 1, [{ mask: new Uint8ClampedArray(3), details, settings: { ...ZERO, lipColor: 100 } }])
+    expect(output[0] - output[1]).toBeGreaterThan(source[0] - source[1])
+    expect(output.slice(4)).toEqual(source.slice(4))
+    expect(() => retouchPortraitPixels(source, 3, 1, [{ mask: new Uint8ClampedArray(3), details: detailMasks(2), settings: ZERO }])).toThrow('细节选区尺寸')
   })
 })

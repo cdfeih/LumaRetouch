@@ -5,7 +5,7 @@ export type RetouchWorkerRequest = {
   source: ArrayBuffer
   width: number
   height: number
-  subjects: Array<{ mask: ArrayBuffer; settings: NaturalRetouchSettings }>
+  subjects: Array<{ mask: ArrayBuffer; settings: NaturalRetouchSettings; details?: { underEyes: ArrayBuffer; teeth: ArrayBuffer; eyes: ArrayBuffer; lips: ArrayBuffer } }>
 }
 
 export type RetouchWorkerResponse = { ok: true; delta: ArrayBuffer } | { ok: false; error: string }
@@ -21,6 +21,10 @@ workerScope.onmessage = (event) => {
     const source = new Uint8ClampedArray(request.source)
     const subjects = request.subjects.map(subject => ({
       mask: new Uint8ClampedArray(subject.mask), settings: subject.settings,
+      details: subject.details ? {
+        underEyes: new Uint8ClampedArray(subject.details.underEyes), teeth: new Uint8ClampedArray(subject.details.teeth),
+        eyes: new Uint8ClampedArray(subject.details.eyes), lips: new Uint8ClampedArray(subject.details.lips),
+      } : undefined,
     }))
     const output = retouchPortraitPixels(source, request.width, request.height, subjects)
     const delta = new Int16Array(request.width * request.height * 3)

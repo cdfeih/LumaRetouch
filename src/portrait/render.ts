@@ -1,6 +1,7 @@
-import { createFaceSkinMask } from './detection'
+import { createFaceDetailMasks, createFaceSkinMask } from './detection'
+import { isEyeWhitePixel, isLipPixel, isTeethPixel } from './retouch'
 import type { PortraitFace } from './detection'
-import type { NaturalRetouchSettings } from './retouch'
+import type { NaturalRetouchSettings, PortraitDetailMasks } from './retouch'
 import type { RetouchWorkerRequest, RetouchWorkerResponse } from './retouch.worker'
 
 export type NaturalRetouchSubject = { face: PortraitFace; settings: NaturalRetouchSettings }
@@ -88,9 +89,30 @@ function runWorker(request: RetouchWorkerRequest, signal: AbortSignal): Promise<
     }
     worker.onerror = () => { finish(); reject(new Error('本地自然精修线程加载或运行失败，请刷新后重试。')) }
     try {
-      worker.postMessage(request, [request.source, ...request.subjects.map(subject => subject.mask)])
+      worker.postMessage(request, [request.source, ...request.subjects.flatMap(subject => [subject.mask, ...Object.values(subject.details ?? {})])])
     } catch { finish(); reject(new Error('图片无法传入本地精修线程，请重试。')) }
   })
+}
+
+/** Add only color-qualified detail pixels to an original-resolution edit gate. */
+export function includePortraitDetailPixels(
+  editable: Uint8ClampedArray,
+  details: PortraitDetailMasks,
+  source: Uint8ClampedArray,
+  settings: NaturalRetouchSettings,
+  adjustment?: Uint8ClampedArray,
+): void {
+  if (source.length !== editable.length * 4 || (adjustment && adjustment.length !== editable.length) || Object.values(details).some(mask => mask.length !== editable.length)) throw new Error('人像细节合成尺寸不一致。')
+  for (let pixel = 0; pixel < editable.length; pixel++) {
+    const offset = pixel * 4, r = source[offset], g = source[offset + 1], b = source[offset + 2]
+    const teeth = details.teeth[pixel] && isTeethPixel(r, g, b)
+    const eyes = details.eyes[pixel] && isEyeWhitePixel(r, g, b)
+    const lips = details.lips[pixel] && isLipPixel(r, g, b)
+    if ((settings.teethWhitening !== undefined && teeth) || (settings.eyeWhitening !== undefined && eyes)
+      || (settings.lipColor !== undefined && lips)) editable[pixel] = 255
+    if (adjustment && (((settings.teethWhitening ?? 0) > 0 && teeth) || ((settings.eyeWhitening ?? 0) > 0 && eyes)
+      || ((settings.lipColor ?? 0) > 0 && lips) || ((settings.darkCircles ?? 0) > 0 && details.underEyes[pixel]))) adjustment[pixel] = 255
+  }
 }
 
 /**
@@ -107,6 +129,7 @@ export function mergeNaturalRetouchStrip(
   dimensions: { width: number; height: number; workWidth: number; workHeight: number; startY: number },
   protection?: Uint8ClampedArray | null,
   selection?: Uint8ClampedArray | null,
+  adjustment?: Uint8ClampedArray | null,
 ): boolean {
   const { width, height, workWidth, workHeight, startY } = dimensions
   if (![width, height, workWidth, workHeight].every(value => Number.isSafeInteger(value) && value > 0)
@@ -114,6 +137,7 @@ export function mergeNaturalRetouchStrip(
     || baseline.length !== current.length || current.length % 4 !== 0 || skin.length !== current.length / 4
     || skin.length % width !== 0 || startY + skin.length / width > height
     || (protection && protection.length !== skin.length) || (selection && selection.length !== skin.length)
+    || (adjustment && adjustment.length !== skin.length)
     || delta.length !== workWidth * workHeight * 3) throw new Error('自然精修合成像素尺寸不一致。')
   let changed = false
   const rows = skin.length / width
@@ -132,7 +156,7 @@ export function mergeNaturalRetouchStrip(
       for (let channel = 0; channel < 3; channel += 1) {
         const top = delta[a + channel] * (1 - fx) + delta[b + channel] * fx
         const bottom = delta[c + channel] * (1 - fx) + delta[d + channel] * fx
-        const target = baseline[offset + channel] + top * (1 - fy) + bottom * fy
+        const target = baseline[offset + channel] + (top * (1 - fy) + bottom * fy) * (adjustment ? adjustment[pixel] / 255 : 1)
         const value = Math.round(Math.max(0, Math.min(255, current[offset + channel] + (target - current[offset + channel]) * amount)))
         if (value !== current[offset + channel]) changed = true
         current[offset + channel] = value
@@ -198,14 +222,31 @@ export async function renderNaturalRetouch(
     const work = make(workWidth, workHeight)
     work.context.drawImage(baselineImage, 0, 0, workWidth, workHeight)
     const workSource = work.context.getImageData(0, 0, workWidth, workHeight).data
-    const workSubjects = subjects.map(subject => ({ mask: createFaceSkinMask(subject.face, workWidth, workHeight).buffer as ArrayBuffer, settings: subject.settings }))
+    const workSubjects = subjects.map(subject => {
+      const hasDetails = ['darkCircles', 'teethWhitening', 'eyeWhitening', 'lipColor'].some(key => subject.settings[key as keyof NaturalRetouchSettings] !== undefined)
+      const masks = hasDetails ? createFaceDetailMasks(subject.face, workWidth, workHeight) : null
+      return {
+        mask: createFaceSkinMask(subject.face, workWidth, workHeight).buffer as ArrayBuffer,
+        settings: subject.settings,
+        details: masks ? {
+          underEyes: masks.underEyes.buffer as ArrayBuffer, teeth: masks.teeth.buffer as ArrayBuffer,
+          eyes: masks.eyes.buffer as ArrayBuffer, lips: masks.lips.buffer as ArrayBuffer,
+        } : undefined,
+      }
+    })
     const delta = await runWorker({ source: workSource.buffer as ArrayBuffer, width: workWidth, height: workHeight, subjects: workSubjects }, signal)
     work.canvas.width = work.canvas.height = 1
     checkAbort(signal)
     const union = new Uint8ClampedArray(width * height)
     for (const subject of subjects) {
       const mask = createFaceSkinMask(subject.face, width, height)
-      for (let pixel = 0; pixel < union.length; pixel += 1) union[pixel] = Math.max(union[pixel], mask[pixel])
+      const skinAdjustment = ['smoothing', 'blemish', 'evenness', 'brightening', 'shine', 'warmth', 'deYellow', 'deRedness', 'rosiness'].some(key => {
+        const value = subject.settings[key as keyof NaturalRetouchSettings]
+        return typeof value === 'number' && Number.isFinite(value) && value !== 0
+      })
+      // Bit 1 marks baseline restoration; bit 2 permits a skin delta. Keeping
+      // these separate prevents detail-only upsampling from leaking onto cheeks.
+      for (let pixel = 0; pixel < union.length; pixel += 1) if (mask[pixel]) union[pixel] |= skinAdjustment ? 3 : 1
       checkAbort(signal)
     }
     const target = make(width, height)
@@ -238,8 +279,24 @@ export async function renderNaturalRetouch(
         selectionStrip.context.drawImage(selection, 0, -y, width, height)
         selectionAlpha = alphaChannel(selectionStrip.context.getImageData(0, 0, width, stripRows).data)
       }
-      const stripChanged = mergeNaturalRetouchStrip(before.data, pixels.data, union.subarray(y * width, (y + stripRows) * width), delta,
-        { width, height, workWidth, workHeight, startY: y }, protectionAlpha, selectionAlpha)
+      // Detail gates are evaluated again at original resolution. Interpolated
+      // worker deltas therefore cannot spill into pupils/iris, lips or tongue.
+      // Build feature masks per strip to avoid four full-size buffers per face.
+      const editable = new Uint8ClampedArray(union.subarray(y * width, (y + stripRows) * width))
+      const adjustment = Uint8ClampedArray.from(editable, flags => flags & 2 ? 255 : 0)
+      for (const subject of subjects) {
+        const settings = subject.settings
+        if (settings.teethWhitening === undefined && settings.eyeWhitening === undefined && settings.lipColor === undefined && !(settings.darkCircles! > 0)) continue
+        const face: PortraitFace = {
+          ...subject.face,
+          bounds: { ...subject.face.bounds, y: (subject.face.bounds.y * height - y) / stripRows, height: subject.face.bounds.height * height / stripRows },
+          landmarks: subject.face.landmarks.map(point => ({ x: point.x, y: (point.y * height - y) / stripRows })),
+        }
+        const details = createFaceDetailMasks(face, width, stripRows)
+        includePortraitDetailPixels(editable, details, before.data, settings, adjustment)
+      }
+      const stripChanged = mergeNaturalRetouchStrip(before.data, pixels.data, editable, delta,
+        { width, height, workWidth, workHeight, startY: y }, protectionAlpha, selectionAlpha, adjustment)
       if (stripChanged) { target.context.putImageData(pixels, 0, y); changed = true }
       // Yield so cancellation and pointer/UI events can run during large exports.
       await new Promise<void>(resolve => setTimeout(resolve, 0))

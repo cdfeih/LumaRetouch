@@ -262,6 +262,12 @@ textarea::placeholder { color: #5d7849; }
 .storage-warning { color: #e9b99a; font-size: 11px; line-height: 1.7; }
 .portrait-panel { grid-column: 1 / -1; min-width: 0; }
 .portrait-panel[hidden] { display: none; }
+.portrait-section-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 20px; }
+.portrait-section-tabs > button { padding: 10px 5px; border: 1px solid #354b2b; background: #1e2c17; color: #a6be92; border-radius: 6px; font-size: 11px; }
+.portrait-section-tabs > button:first-child { grid-column: 1 / -1; }
+.portrait-section-tabs > button.selected { color: #dcf4c5; border-color: #a4cc84; background: #344e27; }
+.portrait-settings[hidden] { display: none; }
+.portrait-global-reset { border-top: 1px solid #2f3b27; padding-top: 18px; }
 .portrait-local-note { display: flex; gap: 8px; align-items: flex-start; padding: 12px; margin-bottom: 20px; background: #263b20; border: 1px solid #3d5930; border-radius: 8px; color: #c6e7ae; font-size: 11px; line-height: 1.8; }
 .portrait-local-note svg { flex-shrink: 0; margin-top: 3px; }
 .portrait-local-note small { font-size: 10px; color: #a1bb8b; }

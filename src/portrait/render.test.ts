@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { mergeNaturalRetouchStrip } from './render'
+import { includePortraitDetailPixels, mergeNaturalRetouchStrip } from './render'
 
 describe('original-resolution natural finishing merge', () => {
   it('keeps current outside target skin, inside feature holes, at green=0, and at protection=1', () => {
@@ -43,5 +43,53 @@ describe('original-resolution natural finishing merge', () => {
     expect(mergeNaturalRetouchStrip(baseline, current, new Uint8ClampedArray([255]), delta,
       { width: 1, height: 4, workWidth: 1, workHeight: 2, startY: 3 })).toBe(true)
     expect([...current]).toEqual([90, 90, 90, 255])
+  })
+})
+
+
+describe('original-resolution feature eligibility', () => {
+  it('does not let interpolated feature deltas spill into iris holes, dark pupils, tongue, protected or green-excluded pixels', () => {
+    const source = new Uint8ClampedArray([
+      180, 185, 180, 255, 175, 190, 195, 255, 20, 20, 20, 255,
+      210, 200, 150, 255, 190, 65, 85, 255, 180, 185, 180, 255, 180, 185, 180, 255,
+    ])
+    const current = new Uint8ClampedArray(source), gate = new Uint8ClampedArray(7)
+    const details = {
+      underEyes: new Uint8ClampedArray(7), eyes: new Uint8ClampedArray([255, 0, 255, 0, 0, 255, 255]),
+      teeth: new Uint8ClampedArray([0, 0, 0, 255, 255, 0, 0]), lips: new Uint8ClampedArray(7),
+    }
+    includePortraitDetailPixels(gate, details, source, { smoothing: 0, blemish: 0, evenness: 0, brightening: 0, shine: 0, eyeWhitening: 100, teethWhitening: 100 })
+    expect([...gate]).toEqual([255, 0, 0, 255, 0, 255, 255])
+    mergeNaturalRetouchStrip(source, current, gate, new Int16Array(21).fill(12),
+      { width: 7, height: 1, workWidth: 7, workHeight: 1, startY: 0 },
+      new Uint8ClampedArray([0, 0, 0, 0, 0, 1, 0]), new Uint8ClampedArray([255, 255, 255, 255, 255, 255, 0]))
+    for (const pixel of [1, 2, 4, 5, 6]) expect(current.slice(pixel * 4, pixel * 4 + 4)).toEqual(source.slice(pixel * 4, pixel * 4 + 4))
+    for (const pixel of [0, 3]) expect(current[pixel * 4]).toBeGreaterThan(source[pixel * 4])
+  })
+
+  it('includes an explicit zero detail setting for restoring its fixed baseline and leaves legacy natural settings alone', () => {
+    const source = new Uint8ClampedArray([180, 185, 180, 255])
+    const details = { underEyes: new Uint8ClampedArray(1), teeth: new Uint8ClampedArray(1), eyes: new Uint8ClampedArray([255]), lips: new Uint8ClampedArray(1) }
+    const natural = { smoothing: 0, blemish: 0, evenness: 0, brightening: 0, shine: 0 }
+    const legacy = new Uint8ClampedArray(1); includePortraitDetailPixels(legacy, details, source, natural)
+    expect(legacy[0]).toBe(0)
+    const gate = new Uint8ClampedArray(1); includePortraitDetailPixels(gate, details, source, { ...natural, eyeWhitening: 0 })
+    const current = new Uint8ClampedArray([210, 215, 210, 255])
+    mergeNaturalRetouchStrip(source, current, gate, new Int16Array(3), { width: 1, height: 1, workWidth: 1, workHeight: 1, startY: 0 })
+    expect(current).toEqual(source)
+  })
+})
+
+
+describe('feature-delta interpolation limits', () => {
+  it('resets to baseline outside an enabled detail rather than leaking neighboring upsampled deltas', () => {
+    const baseline = new Uint8ClampedArray([180, 160, 140, 255, 120, 100, 90, 255])
+    const current = new Uint8ClampedArray([190, 170, 150, 255, 125, 105, 95, 255])
+    const editable = new Uint8ClampedArray([255, 255]), adjustment = new Uint8ClampedArray(2)
+    const details = { underEyes: new Uint8ClampedArray([0, 255]), eyes: new Uint8ClampedArray(2), teeth: new Uint8ClampedArray(2), lips: new Uint8ClampedArray(2) }
+    includePortraitDetailPixels(editable, details, baseline, { smoothing: 0, blemish: 0, evenness: 0, brightening: 0, shine: 0, darkCircles: 100 }, adjustment)
+    mergeNaturalRetouchStrip(baseline, current, editable, new Int16Array([20, 20, 20]),
+      { width: 2, height: 1, workWidth: 1, workHeight: 1, startY: 0 }, null, null, adjustment)
+    expect([...current]).toEqual([180, 160, 140, 255, 140, 120, 110, 255])
   })
 })

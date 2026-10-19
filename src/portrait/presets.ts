@@ -1,20 +1,25 @@
 import type { NaturalRetouchSettings } from './retouch';
+import { normalizePortraitSettings, PORTRAIT_FIELDS } from './settings';
+import type { PortraitSettings } from './settings';
 
 export interface PortraitPreset {
   id: string;
   name: string;
-  settings: NaturalRetouchSettings;
+  settings: PortraitSettings;
 }
 
 export const PRESET_STORAGE_KEY = 'luma-natural-presets-v1';
-export const PORTRAIT_FIELDS = ['smoothing', 'blemish', 'evenness', 'brightening', 'shine'] as const;
 type PresetStorage = Pick<Storage, 'getItem' | 'setItem'>;
 
-function parseSettings(value: unknown): NaturalRetouchSettings | null {
+function parseSettings(value: unknown): PortraitSettings | null {
   if (!value || typeof value !== 'object') return null;
   const record = value as Record<string, unknown>;
-  if (!PORTRAIT_FIELDS.every(field => typeof record[field] === 'number' && Number.isFinite(record[field]) && (record[field] as number) >= 0 && (record[field] as number) <= 100)) return null;
-  return Object.fromEntries(PORTRAIT_FIELDS.map(field => [field, Math.round(record[field] as number)])) as unknown as NaturalRetouchSettings;
+  if (!PORTRAIT_FIELDS.every(field => {
+    const number = record[field.key];
+    if (number === undefined) return field.section !== 'natural';
+    return typeof number === 'number' && Number.isFinite(number) && number >= field.min && number <= field.max;
+  })) return null;
+  return normalizePortraitSettings(record as Partial<PortraitSettings>);
 }
 
 export function loadPortraitPresets(storage?: PresetStorage): PortraitPreset[] {
@@ -37,7 +42,7 @@ function persist(presets: PortraitPreset[], storage?: PresetStorage) {
   catch { throw new Error('浏览器未能保存个人预设，请检查本地存储是否可用。'); }
 }
 
-export function savePortraitPreset(name: string, settings: NaturalRetouchSettings, storage?: PresetStorage): PortraitPreset[] {
+export function savePortraitPreset(name: string, settings: NaturalRetouchSettings | PortraitSettings, storage?: PresetStorage): PortraitPreset[] {
   const cleanName = name.trim().slice(0, 32);
   const cleanSettings = parseSettings(settings);
   if (!cleanName) throw new Error('先给个人预设起一个名字。');
