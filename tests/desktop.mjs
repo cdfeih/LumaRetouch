@@ -100,6 +100,7 @@ try {
     return route.abort('blockedbyclient');
   });
   await page.waitForLoadState('domcontentloaded');
+  await page.getByTestId('tool-smooth').click(); // 明确验证原有云端磨皮工具。
   originalStorage = await page.evaluate(() => ({ ...localStorage }));
   await check('隐藏的真实 Electron 启动、sandbox preload IPC 桥可用', async () => {
     assert.equal(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().some(win => win.isVisible())), false);
@@ -202,6 +203,24 @@ try {
     assert.equal(await page.locator('.secret-input input').inputValue(), '');
     assert.equal(await page.getByRole('checkbox', { name: /记住 API Key/ }).isChecked(), false);
     assert.equal(await page.evaluate(key => JSON.stringify({ ...localStorage, ...sessionStorage }).includes(key), fakeKey), false);
+  });
+
+  await check('Electron file:// 本地模型与 Worker 自然精修无需 Key，眼外背景保持原像素', async () => {
+    await page.getByRole('button', { name: '关闭模型设置', exact: true }).click();
+    await page.getByTestId('tool-natural').click();
+    await page.getByTestId('photo-input').setInputFiles(path.join(root, 'tests/fixtures/mediapipe-portrait.jpg'));
+    const before = await currentImage();
+    const cornerBefore = await readPixel(before);
+    const callsBefore = requests.length;
+    await page.getByRole('button', { name: '开始一键自然精修', exact: true }).click();
+    await page.waitForFunction(() => document.querySelector('.document-tag')?.textContent === '1 次编辑', undefined, { timeout: 30000 });
+    await waitForPhoto();
+    const after = await currentImage();
+    assert.notEqual(after, before);
+    assert.ok(await page.locator('.portrait-person').count() >= 2);
+    assert.deepEqual(await readPixel(after), cornerBefore);
+    assert.equal(requests.length, callsBefore);
+    await page.screenshot({ path: path.join(outputDir, 'local-natural-retouch.png'), fullPage: true });
   });
 
   assert.deepEqual(rendererErrors, []);

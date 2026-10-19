@@ -260,6 +260,30 @@ textarea::placeholder { color: #5d7849; }
 .remember-key > input { flex-shrink: 0; width: 16px; height: 16px; margin: 1px 0 0; accent-color: #c6efb3; cursor: pointer; }
 .remember-key small { display: block; margin-top: 5px; color: #91ad7b; font-size: 10px; line-height: 1.7; }
 .storage-warning { color: #e9b99a; font-size: 11px; line-height: 1.7; }
+.portrait-panel { grid-column: 1 / -1; min-width: 0; }
+.portrait-panel[hidden] { display: none; }
+.portrait-local-note { display: flex; gap: 8px; align-items: flex-start; padding: 12px; margin-bottom: 20px; background: #263b20; border: 1px solid #3d5930; border-radius: 8px; color: #c6e7ae; font-size: 11px; line-height: 1.8; }
+.portrait-local-note svg { flex-shrink: 0; margin-top: 3px; }
+.portrait-local-note small { font-size: 10px; color: #a1bb8b; }
+.portrait-person-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(58px, 1fr)); gap: 7px; margin-top: 14px; max-height: 230px; overflow-y: auto; }
+.portrait-person { display: flex; flex-direction: column; justify-content: center; align-items: center; gap: 6px; background: #1b2815; padding: 6px; border: 1px solid #35482b; border-radius: 7px; color: #9eb88b; font-size: 10px; min-width: 0; }
+.portrait-person.selected { border-color: #a6d383; color: #d4efbd; background: #314b25; }
+.portrait-person img { width: 43px; height: 43px; border-radius: 5px; object-fit: cover; }
+.portrait-all svg { margin-block: 11px; }
+.portrait-settings .slider-field { margin-bottom: 22px; }
+.portrait-reset { display: flex; flex-wrap: wrap; gap: 8px; margin: 7px 0 12px; }
+.portrait-reset button { border: 1px solid #3b512e; padding: 8px 10px; background: #23321b; color: #b8d1a4; border-radius: 5px; font-size: 10px; }
+.portrait-mixed { color: #c8b986; font-size: 10px; line-height: 1.8; }
+.portrait-preset-list { display: flex; flex-direction: column; gap: 7px; margin-top: 12px; max-height: 240px; overflow-y: auto; }
+.portrait-preset { display: flex; align-items: stretch; background: #1b2815; border: 1px solid #35482b; border-radius: 6px; min-width: 0; }
+.portrait-preset > button:first-child { display: flex; flex-direction: column; gap: 5px; text-align: left; flex: 1; min-width: 0; padding: 10px; color: #c6ddb4; background: transparent; }
+.portrait-preset > button:first-child span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; font-size: 11px; }
+.portrait-preset small { font-size: 9px; color: #8fa778; }
+.portrait-preset > button:last-child { width: 32px; flex-shrink: 0; background: transparent; color: #8fa778; }
+.portrait-face-markers { position: absolute; inset: 0; pointer-events: none; }
+.portrait-face-markers > span { position: absolute; border: 1px solid #bad0a577; border-radius: 7px; }
+.portrait-face-markers > span.selected { border-color: #d6f4b8; box-shadow: 0 0 0 1px #16260b66; }
+.portrait-face-markers small { position: absolute; top: -18px; left: -1px; padding: 2px 5px; border-radius: 3px; background: #1d301be6; color: #dbedca; font-size: 9px; white-space: nowrap; }
 .settings-note { display: flex; align-items: flex-start; gap: 9px; padding: 12px; background: #24371b; color: #91ad7b; font-size: 10px; line-height: 1.9; border-radius: 6px; margin: 19px 0 23px; }
 .settings-note svg { flex-shrink: 0; margin-top: 3px; }
 .settings-note p { margin: 0; }

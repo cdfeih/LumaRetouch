@@ -88,6 +88,7 @@ let edited;
 let adjusted;
 try {
   await page.goto(baseUrl, { waitUntil: 'networkidle' });
+  await page.getByTestId('tool-smooth').click(); // 明确验证原有云端磨皮工具。
   const fixtures = await page.evaluate(() => {
     const canvas = document.createElement('canvas'); canvas.width = 640; canvas.height = 480;
     const ctx = canvas.getContext('2d');
