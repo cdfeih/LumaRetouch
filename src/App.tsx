@@ -2,13 +2,14 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ChangeEvent, CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
 import { ArrowDownToLine, ArrowUpRight, Brush, Check, ChevronDown, CircleHelp, CloudSun, Eraser, Eye, EyeOff, Hand, ImagePlus, Images, Layers2, LoaderCircle, Maximize, Minus, Palette, Plus, Redo2, RotateCcw, ScanFace, Settings2, ShieldCheck, SlidersHorizontal, Sparkles, SplitSquareHorizontal, Undo2, Upload, UsersRound, WandSparkles, X } from 'lucide-react';
 import { DEFAULT_PROVIDERS, SKY_PRESETS, STYLE_PRESETS, buildCreativePrompt, editImage } from './ai';
-import type { ProviderConfig, RetouchTool } from './ai';
+import type { RetouchTool } from './ai';
 import { applyAdjustments, composeEdit, createMaskPayload, createProtectionPayload, encodeExport, loadPhoto, resizeForModel } from './imaging';
 import { hasMaskSelection } from './imaging/pixels';
 import { exportImage, platformName, request } from './platform';
+import { SETTINGS_KEY, loadProviderKind, loadProviderSettings, saveProviderSettings } from './settings';
+import type { ProviderKind, StorageStatus } from './settings';
 
 type Tool = RetouchTool;
-type ProviderKind = ProviderConfig['kind'];
 type AiResultReview = { source: string; raw: string; selected: string; full?: string; mode: 'selection' | 'full'; protection: HTMLCanvasElement | null };
 type Document = { id: string; name: string; original: string; current: string; width: number; height: number; history: string[]; future: string[]; edits: number; aiReview?: AiResultReview };
 type Adjustments = { exposure: number; contrast: number; saturation: number; temperature: number; tint: number };
@@ -23,18 +24,6 @@ const TOOLS = [
   { id: 'style' as const, name: '一键风格', en: 'LOOKS & ART', icon: Palette, description: '选择摄影调色或艺术重绘，让同一张照片呈现不同气质。', tip: '摄影预设尽量保留真实细节；艺术预设会重绘材质与笔触。' },
   { id: 'match' as const, name: '参考图追色', en: 'REFERENCE COLOR', icon: Images, description: '上传喜欢的样片，让模型参考它的色调、对比与光影氛围。', tip: '参考图只提供色彩与影调方向，不复制其中的人物和构图。' },
 ];
-
-function loadConfigs(): Record<ProviderKind, ProviderConfig> {
-  const result = Object.fromEntries(Object.entries(DEFAULT_PROVIDERS).map(([kind, value]) => [kind, { kind, baseUrl: value.baseUrl, model: value.model, apiKey: '' }])) as Record<ProviderKind, ProviderConfig>;
-  try {
-    const saved = JSON.parse(localStorage.getItem('luma-provider-settings') || '{}') as Record<string, { baseUrl?: unknown; model?: unknown }>;
-    for (const kind of Object.keys(result) as ProviderKind[]) {
-      if (typeof saved[kind]?.baseUrl === 'string') result[kind].baseUrl = saved[kind].baseUrl as string;
-      if (typeof saved[kind]?.model === 'string') result[kind].model = saved[kind].model as string;
-    }
-  } catch { /* Corrupt non-secret preferences can safely fall back to defaults. */ }
-  return result;
-}
 
 function Slider({ label, value, min, max, step = 1, onChange, suffix = '', disabled = false }: { label: string; value: number; min: number; max: number; step?: number; onChange: (value: number) => void; suffix?: string; disabled?: boolean }) {
   return <label className="slider-field"><span><span>{label}</span><output>{value > 0 && min < 0 ? '+' : ''}{value}{suffix}</output></span><input aria-label={label} type="range" min={min} max={max} step={step} value={value} disabled={disabled} onChange={event => onChange(Number(event.target.value))} style={{ '--range-progress': `${((value - min) / (max - min)) * 100}%` } as CSSProperties} /></label>;
@@ -57,8 +46,9 @@ export default function App() {
   const [skyId, setSkyId] = useState(SKY_PRESETS[0].id);
   const [styleCategory, setStyleCategory] = useState<'photo' | 'art'>('photo');
   const [reference, setReference] = useState<{ dataUrl: string; width: number; height: number; name: string; mimeType: string } | null>(null);
-  const [configs, setConfigs] = useState(loadConfigs);
-  const [providerKind, setProviderKind] = useState<ProviderKind>('openai');
+  const [configs, setConfigs] = useState(loadProviderSettings);
+  const [providerKind, setProviderKind] = useState(loadProviderKind);
+  const [storageStatus, setStorageStatus] = useState<StorageStatus>('saved');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [keyVisible, setKeyVisible] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
@@ -98,10 +88,26 @@ export default function App() {
   const notify = useCallback((text: string, error = false) => setToast({ text, error }), []);
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(null), toast.error ? 10000 : 5000); return () => clearTimeout(timer); }, [toast]);
   useEffect(() => {
-    try {
-      localStorage.setItem('luma-provider-settings', JSON.stringify(Object.fromEntries(Object.entries(configs).map(([kind, config]) => [kind, { baseUrl: config.baseUrl, model: config.model }]))));
-    } catch { /* Preferences are optional in restricted browser contexts. */ }
-  }, [configs]);
+    setStorageStatus(saveProviderSettings(configs, providerKind));
+  }, [configs, providerKind]);
+  useEffect(() => {
+    function syncSettings(event: StorageEvent) {
+      if (event.key !== SETTINGS_KEY && event.key !== null) return;
+      try { if (event.storageArea !== window.localStorage) return; }
+      catch { return; }
+      const saved = loadProviderSettings();
+      setConfigs(previous => {
+        const next = { ...saved };
+        for (const kind of Object.keys(saved) as ProviderKind[]) {
+          // An opt-out in another tab keeps this tab's session key without saving it again.
+          if (event.newValue !== null && !saved[kind].rememberApiKey) next[kind] = { ...saved[kind], apiKey: previous[kind].apiKey };
+        }
+        return next;
+      });
+    }
+    window.addEventListener('storage', syncSettings);
+    return () => window.removeEventListener('storage', syncSettings);
+  }, []);
   useEffect(() => {
     const stage = stageRef.current;
     if (!stage) return;
@@ -348,6 +354,14 @@ export default function App() {
   function changeProviderField(field: 'apiKey' | 'baseUrl' | 'model', value: string) {
     setConfigs(previous => ({ ...previous, [providerKind]: { ...previous[providerKind], [field]: value } }));
   }
+  function finishSettings() {
+    const status = saveProviderSettings(configs, providerKind);
+    setStorageStatus(status);
+    setSettingsOpen(false);
+    if (status === 'clear-failed') notify('浏览器未能更新或清除已保存的设置。请在浏览器站点设置中清除本地数据。', true);
+    else if (status === 'unavailable') notify('浏览器未能保存设置，刷新后可能需要重新填写。', true);
+    else notify(provider.apiKey ? provider.rememberApiKey ? '模型设置已保存。下次打开会自动恢复此服务的 API Key。' : '模型设置已保存。此服务的 API Key 仅在本次会话内保留。' : '模型设置已保存。');
+  }
 
   return <div className="app-shell" onDragOver={event => { event.preventDefault(); if (!busy) setDragging(true); }} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false); }} onDrop={event => { event.preventDefault(); setDragging(false); void importFiles(event.dataTransfer.files); }}>
     <input data-testid="photo-input" ref={inputRef} className="hidden-input" type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(event: ChangeEvent<HTMLInputElement>) => void importFiles(event.target.files)} />
@@ -401,7 +415,7 @@ export default function App() {
     {dragging && <div className="drag-overlay"><Upload size={42} /><strong>松开，导入照片</strong><span>JPEG · PNG · WebP</span></div>}
     {toast && <div className={`toast ${toast.error ? 'error' : ''}`} role={toast.error ? 'alert' : 'status'}>{toast.error ? <CircleHelp size={17} /> : <Check size={17} />}<span>{toast.text}</span><button aria-label="关闭提示" onClick={() => setToast(null)}><X size={15} /></button></div>}
 
-    {settingsOpen && <div className="modal-backdrop" onClick={event => { if (event.target === event.currentTarget) setSettingsOpen(false); }}><section className="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title"><div className="modal-heading"><div><span className="eyebrow">BRING YOUR OWN MODEL</span><h2 id="settings-title">连接你的 AI 模型</h2></div><button className="icon-button" aria-label="关闭模型设置" onClick={() => setSettingsOpen(false)}><X size={20} /></button></div><p className="modal-intro">选择支持图像编辑的服务。照片会在开始 AI 处理时发送到你选择的接口。</p><div className="provider-grid">{(Object.keys(DEFAULT_PROVIDERS) as ProviderKind[]).map(kind => <button key={kind} className={providerKind === kind ? 'selected' : ''} onClick={() => setProviderKind(kind)}><span>{DEFAULT_PROVIDERS[kind].label}</span>{providerKind === kind && <Check size={15} />}</button>)}</div><label className="text-field"><span>API 地址</span><input type="url" aria-describedby={providerKind === 'ark' ? 'ark-address-help' : undefined} autoCapitalize="off" spellCheck={false} value={provider.baseUrl} onChange={event => changeProviderField('baseUrl', event.target.value)} placeholder={DEFAULT_PROVIDERS[providerKind].baseUrl} />{providerKind === 'ark' && <small id="ark-address-help" className="api-address-help">建议填到 /api/v3；粘贴完整 /images/generations 地址也会自动识别。</small>}</label><label className="text-field"><span>模型名称／接入点 ID</span><input autoCapitalize="off" spellCheck={false} value={provider.model} onChange={event => changeProviderField('model', event.target.value)} placeholder={DEFAULT_PROVIDERS[providerKind].model} /></label><label className="text-field"><span>API Key<span className="field-meta">仅当前会话保存</span></span><div className="secret-input"><input autoComplete="off" autoCapitalize="off" spellCheck={false} type={keyVisible ? 'text' : 'password'} value={provider.apiKey} onChange={event => changeProviderField('apiKey', event.target.value)} placeholder="在此填写，密钥不会写入配置文件" /><button type="button" aria-label={keyVisible ? '隐藏 API Key' : '显示 API Key'} onClick={() => setKeyVisible(!keyVisible)}>{keyVisible ? <EyeOff size={17} /> : <Eye size={17} />}</button></div></label><div className="settings-note"><CircleHelp size={17} /><p>{providerKind === 'compatible' ? '兼容服务需支持图像编辑与图片上传；只有文字聊天能力的模型无法修图。' : providerKind === 'ark' ? '可填写服务商提供的模型名或你创建的接入点 ID。账号须已开通对应图像编辑能力。' : '需要对应服务商的 API 权限与额度。软件不会代替你购买额度。'}<br />关闭应用后需要重新填写 API Key。</p></div><div className="modal-actions"><button className="button button-quiet" onClick={() => setConfigs(previous => ({ ...previous, [providerKind]: { ...previous[providerKind], apiKey: '' } }))}>清除密钥</button><button className="button button-primary" onClick={() => { setSettingsOpen(false); notify('模型设置已保存。API Key 仅在本次会话内保留。'); }}><Check size={16} />完成设置</button></div></section></div>}
+    {settingsOpen && <div className="modal-backdrop" onClick={event => { if (event.target === event.currentTarget) setSettingsOpen(false); }}><section className="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title"><div className="modal-heading"><div><span className="eyebrow">BRING YOUR OWN MODEL</span><h2 id="settings-title">连接你的 AI 模型</h2></div><button className="icon-button" aria-label="关闭模型设置" onClick={() => setSettingsOpen(false)}><X size={20} /></button></div><p className="modal-intro">选择支持图像编辑的服务。照片会在开始 AI 处理时发送到你选择的接口。</p><div className="provider-grid">{(Object.keys(DEFAULT_PROVIDERS) as ProviderKind[]).map(kind => <button key={kind} className={providerKind === kind ? 'selected' : ''} onClick={() => { setProviderKind(kind); setKeyVisible(false); }}><span>{DEFAULT_PROVIDERS[kind].label}</span>{providerKind === kind && <Check size={15} />}</button>)}</div><label className="text-field"><span>API 地址</span><input type="url" aria-describedby={providerKind === 'ark' ? 'ark-address-help' : undefined} autoCapitalize="off" spellCheck={false} value={provider.baseUrl} onChange={event => changeProviderField('baseUrl', event.target.value)} placeholder={DEFAULT_PROVIDERS[providerKind].baseUrl} />{providerKind === 'ark' && <small id="ark-address-help" className="api-address-help">建议填到 /api/v3；粘贴完整 /images/generations 地址也会自动识别。</small>}</label><label className="text-field"><span>模型名称／接入点 ID</span><input autoCapitalize="off" spellCheck={false} value={provider.model} onChange={event => changeProviderField('model', event.target.value)} placeholder={DEFAULT_PROVIDERS[providerKind].model} /></label><label className="text-field"><span>API Key<span className="field-meta">{provider.rememberApiKey ? '当前浏览器记住' : '仅当前会话'}</span></span><div className="secret-input"><input autoComplete="off" autoCapitalize="off" spellCheck={false} type={keyVisible ? 'text' : 'password'} value={provider.apiKey} onChange={event => changeProviderField('apiKey', event.target.value)} placeholder="填写服务商提供的 API Key" /><button type="button" aria-label={keyVisible ? '隐藏 API Key' : '显示 API Key'} onClick={() => setKeyVisible(!keyVisible)}>{keyVisible ? <EyeOff size={17} /> : <Eye size={17} />}</button></div></label><label className="remember-key"><input type="checkbox" checked={provider.rememberApiKey} onChange={event => { const rememberApiKey = event.currentTarget.checked; setConfigs(previous => ({ ...previous, [providerKind]: { ...previous[providerKind], rememberApiKey } })); }} /><span>记住 API Key<small>仅保存在当前浏览器；取消勾选会删除已保存的密钥，本次会话仍可使用。</small></span></label>{storageStatus !== 'saved' && <p className="storage-warning" role="status">{storageStatus === 'clear-failed' ? '浏览器未能更新或清除本地记录，请在浏览器站点设置中清除本地数据。' : '浏览器未能保存设置，刷新后可能需要重新填写。'}</p>}<div className="settings-note"><CircleHelp size={17} /><p>{providerKind === 'compatible' ? '兼容服务需支持图像编辑与图片上传；只有文字聊天能力的模型无法修图。' : providerKind === 'ark' ? '可填写服务商提供的模型名或你创建的接入点 ID。账号须已开通对应图像编辑能力。' : '需要对应服务商的 API 权限与额度。软件不会代替你购买额度。'}<br />各服务商的密钥分别保存。共用电脑可取消记住或点击“清除密钥”。</p></div><div className="modal-actions"><button className="button button-quiet" onClick={() => setConfigs(previous => ({ ...previous, [providerKind]: { ...previous[providerKind], apiKey: '' } }))}>清除密钥</button><button className="button button-primary" onClick={finishSettings}><Check size={16} />完成设置</button></div></section></div>}
     {exportOpen && doc && <div className="modal-backdrop" onClick={event => { if (event.target === event.currentTarget && !busy) setExportOpen(false); }}><section className="modal export-modal" role="dialog" aria-modal="true" aria-labelledby="export-title"><div className="modal-heading"><div><span className="eyebrow">READY TO SAVE</span><h2 id="export-title">导出你的照片</h2></div><button className="icon-button" aria-label="关闭导出" disabled={busy} onClick={() => setExportOpen(false)}><X size={20} /></button></div><div className="export-preview"><img src={doc.current} alt="待导出照片" /><div><strong>{doc.name}</strong><span>{doc.width.toLocaleString()} × {doc.height.toLocaleString()} px</span><span>按当前编辑结果导出，原文件不覆盖</span></div></div><div className="format-options"><button className={exportFormat === 'jpeg' ? 'selected' : ''} onClick={() => setExportFormat('jpeg')}><strong>JPEG</strong><span>高画质 · 便于分享</span></button><button className={exportFormat === 'png' ? 'selected' : ''} onClick={() => setExportFormat('png')}><strong>PNG</strong><span>无损编码 · 文件较大</span></button></div><p className="export-note">第一版以浏览器解码后的照片为基础，不保留原文件的 EXIF／ICC 配置。</p><button className="button button-primary full-width button-large" onClick={() => void savePhoto()} disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <ArrowDownToLine size={18} />}{busy ? '正在导出…' : '保存照片'}</button></section></div>}
   </div>;
 }

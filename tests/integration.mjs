@@ -119,14 +119,15 @@ try {
     assert.equal(modelCalls, 0);
   });
 
-  await check('无 Key 启动 AI 打开设置；Key 仅保留于当前会话', async () => {
+  await check('无 Key 启动 AI 打开设置；取消记住后 Key 仅保留于当前会话', async () => {
     await page.getByRole('button', { name: '开始质感磨皮', exact: true }).click();
     await page.getByRole('dialog', { name: '连接你的 AI 模型' }).waitFor();
+    await page.getByRole('checkbox', { name: /记住 API Key/ }).uncheck();
     await page.locator('.secret-input input').fill(fakeKey);
     await page.getByRole('button', { name: '完成设置', exact: true }).click();
     const storage = await page.evaluate(() => JSON.stringify({ local: { ...localStorage }, session: { ...sessionStorage } }));
     assert.equal(storage.includes(fakeKey), false);
-    assert.equal(storage.includes('apiKey'), false);
+    assert.equal(await page.evaluate(() => Object.hasOwn(JSON.parse(localStorage.getItem('luma-provider-settings')).openai, 'apiKey')), false);
     assert.equal(modelCalls, 0);
   });
 
@@ -286,13 +287,13 @@ try {
     await page.getByRole('button', { name: '关闭模型设置', exact: true }).click();
   });
 
-  await check('刷新后 Key 清空，localStorage 与 sessionStorage 无密钥', async () => {
+  await check('选择不记住后刷新 Key 清空，localStorage 与 sessionStorage 无该密钥', async () => {
     await page.reload({ waitUntil: 'networkidle' });
     await page.getByRole('button', { name: '模型设置', exact: true }).click();
     assert.equal(await page.locator('.secret-input input').inputValue(), '');
     const storage = await page.evaluate(() => JSON.stringify({ local: { ...localStorage }, session: { ...sessionStorage } }));
     assert.equal(storage.includes(fakeKey), false);
-    assert.equal(storage.includes('apiKey'), false);
+    assert.equal(await page.getByRole('checkbox', { name: /记住 API Key/ }).isChecked(), false);
   });
 
   assert.deepEqual(consoleErrors, [], '浏览器不应有未捕获的 JavaScript 错误');

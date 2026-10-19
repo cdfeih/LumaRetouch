@@ -256,6 +256,10 @@ textarea::placeholder { color: #5d7849; }
 .secret-input { position: relative; }
 .secret-input > input { padding-right: 45px; }
 .secret-input > button { position: absolute; top: 0; right: 3px; height: 40px; width: 37px; background: transparent; color: #83a16d; display: flex; justify-content: center; align-items: center; }
+.remember-key { display: flex; align-items: flex-start; gap: 9px; margin: 17px 0; color: #c3d9b2; font-size: 12px; cursor: pointer; }
+.remember-key > input { flex-shrink: 0; width: 16px; height: 16px; margin: 1px 0 0; accent-color: #c6efb3; cursor: pointer; }
+.remember-key small { display: block; margin-top: 5px; color: #91ad7b; font-size: 10px; line-height: 1.7; }
+.storage-warning { color: #e9b99a; font-size: 11px; line-height: 1.7; }
 .settings-note { display: flex; align-items: flex-start; gap: 9px; padding: 12px; background: #24371b; color: #91ad7b; font-size: 10px; line-height: 1.9; border-radius: 6px; margin: 19px 0 23px; }
 .settings-note svg { flex-shrink: 0; margin-top: 3px; }
 .settings-note p { margin: 0; }

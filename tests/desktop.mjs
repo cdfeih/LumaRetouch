@@ -128,6 +128,7 @@ try {
     await page.getByRole('button', { name: '兼容图像编辑接口', exact: true }).click();
     await page.getByLabel('API 地址', { exact: true }).fill(`http://127.0.0.1:${port}/v1`);
     await page.getByLabel('模型名称／接入点 ID', { exact: true }).fill('qa-image-editor');
+    await page.getByRole('checkbox', { name: /记住 API Key/ }).uncheck();
     await page.locator('.secret-input input').fill(fakeKey);
     await page.getByRole('button', { name: '完成设置', exact: true }).click();
     await page.getByRole('button', { name: '开始质感磨皮', exact: true }).click();
@@ -193,12 +194,13 @@ try {
     assert.deepEqual(await readPixel(await currentImage()), { width: 720, height: 480, rgba: [78, 165, 122, 255] });
   });
 
-  await check('Electron storage 不保存 Key，重载会话后 Key 清空', async () => {
+  await check('Electron 取消记住后 storage 不保存该 Key，重载会话后 Key 清空', async () => {
     assert.equal(await page.evaluate(key => JSON.stringify({ ...localStorage, ...sessionStorage }).includes(key), fakeKey), false);
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.getByRole('button', { name: '模型设置', exact: true }).first().click();
     await page.getByRole('button', { name: '兼容图像编辑接口', exact: true }).click();
     assert.equal(await page.locator('.secret-input input').inputValue(), '');
+    assert.equal(await page.getByRole('checkbox', { name: /记住 API Key/ }).isChecked(), false);
     assert.equal(await page.evaluate(key => JSON.stringify({ ...localStorage, ...sessionStorage }).includes(key), fakeKey), false);
   });
 
