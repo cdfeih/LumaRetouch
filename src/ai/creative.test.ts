@@ -3,13 +3,27 @@ import { buildCreativePrompt, buildRetouchPrompt, SKY_PRESETS, STYLE_PRESETS } f
 import type { RetouchTool } from './index';
 
 describe('创意编辑输入约束', () => {
-  it('添加内容必须同时有选区与具体描述，追色必须有参考图', () => {
-    expect(() => buildCreativePrompt({ tool: 'add', strength: 50, customPrompt: '一只橘猫' })).toThrow('涂抹');
+  it('添加内容只强制具体描述，去物仍须选区，追色仍须参考图', () => {
+    expect(() => buildCreativePrompt({ tool: 'add', strength: 50, customPrompt: '一只橘猫' })).not.toThrow();
+    expect(() => buildCreativePrompt({ tool: 'add', strength: 50, customPrompt: ' \n ' })).toThrow('描述');
     expect(() => buildCreativePrompt({ tool: 'add', strength: 50, hasSelection: true, customPrompt: ' \n ' })).toThrow('描述');
     expect(() => buildCreativePrompt({ tool: 'match', strength: 50 })).toThrow('参考图');
     expect(() => buildCreativePrompt({ tool: 'remove', strength: 50 })).toThrow('涂抹');
     expect(() => buildCreativePrompt({ tool: 'style', strength: 50, styleId: 'missing' })).toThrow('风格预设');
     expect(() => buildCreativePrompt({ tool: 'sky', strength: 50, skyId: 'missing' })).toThrow('天空预设');
+  });
+
+  it('自由添加与仅红色保护不被误称绿色选区，仅真正有绿区时限制布局', () => {
+    const free = buildCreativePrompt({ tool: 'add', strength: 65, customPrompt: '一只橘猫拥抱主体' });
+    expect(free).toContain('一只橘猫拥抱主体');
+    expect(free).not.toMatch(/随附选区为本次唯一可编辑范围|仅在用户涂抹的选区内|严格保护选区外所有内容/);
+    const protectedFree = buildCreativePrompt({ tool: 'add', strength: 65, customPrompt: '一只橘猫拥抱主体', hasProtection: true });
+    expect(protectedFree).toMatch(/保护[\s\S]*原(?:有)?像素/);
+    expect(protectedFree).not.toMatch(/随附选区为本次唯一可编辑范围|仅在用户涂抹的选区内/);
+    const selected = buildCreativePrompt({ tool: 'add', strength: 65, customPrompt: '一只橘猫', hasSelection: true, hasProtection: true });
+    expect(selected).toContain('选区外所有像素必须保持原样');
+    expect(selected).toMatch(/保护[\s\S]*原(?:有)?像素/);
+    expect(() => buildCreativePrompt({ tool: 'remove', strength: 50, hasProtection: true })).toThrow('涂抹');
   });
 
   it('添加只作用于选区；追色不复制参考主体或构图', () => {

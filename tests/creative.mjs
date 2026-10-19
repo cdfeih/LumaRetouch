@@ -149,12 +149,15 @@ try {
     assert.deepEqual((await imageStats(await currentImage())).corner, before.corner);
   });
 
-  await check('添加内容缺少描述或选区均不上传，满足两项后只编辑选区', async () => {
+  await check('添加内容缺描述不上传，纯文字可整图生成，有绿区时仍只编辑选区', async () => {
     await tool('add').click();
     await page.locator('#prompt').fill('');
     await noUpload();
-    await page.locator('#prompt').fill('在选区中添加一只小红气球');
-    await noUpload();
+    await page.locator('#prompt').fill('在主体旁边添加一只小红气球');
+    const free = await runEdit();
+    assert.equal(hasMask(free), false);
+    assert.match(prompt(free), /小红气球/);
+    assert.doesNotMatch(prompt(free), /仅在用户涂抹的选区内|随附选区为本次唯一可编辑范围/);
     await paint();
     await page.locator('#prompt').fill('');
     await noUpload();

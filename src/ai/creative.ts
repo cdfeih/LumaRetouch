@@ -44,16 +44,18 @@ export interface CreativePromptInput {
   styleId?: string;
   skyId?: string;
   hasSelection?: boolean;
+  /** 与用户绿色编辑选区区分：只有保护时，其他区域仍可自由布局。 */
+  hasProtection?: boolean;
   hasReference?: boolean;
 }
 
 /** 输入校验与编辑语义同处，避免无参考追色或无目标生成被误提交。 */
 export function buildCreativePrompt(input: CreativePromptInput): string {
-  const { tool, hasSelection = false, hasReference = false } = input;
+  const { tool, hasSelection = false, hasProtection = false, hasReference = false } = input;
   const custom = input.customPrompt?.trim().slice(0, 1500) ?? '';
   const amount = Math.round(Math.max(0, Math.min(100, Number.isFinite(input.strength) ? input.strength : 40)));
-  if ((tool === 'remove' || tool === 'add') && !hasSelection) throw new RetouchError('INPUT', tool === 'add' ? '先涂抹要添加内容的位置。' : '先涂抹要移除的物体。');
-  if (tool === 'add' && !custom) throw new RetouchError('INPUT', '请描述希望在选区中添加什么内容。');
+  if (tool === 'remove' && !hasSelection) throw new RetouchError('INPUT', '先涂抹要移除的物体。');
+  if (tool === 'add' && !custom) throw new RetouchError('INPUT', '请描述希望添加什么内容。');
   if (tool === 'match' && !hasReference) throw new RetouchError('INPUT', '请先导入用于追色的风格参考图。');
   const identity = '请只返回第 1 张待修图片的编辑结果。保持原始人物身份、五官比例、脸型、年龄、表情、姿势、服装、主体关系、构图和画幅，不裁剪或移动画面。';
   let task: string;
@@ -63,7 +65,13 @@ export function buildCreativePrompt(input: CreativePromptInput): string {
     case 'blemish': task = '识别并清除临时痘痘、小面积泛红和明显的小瑕疵，使用周围真实皮肤纹理自然修复。保留正常毛孔、雀斑、痣、胎记及身份特征，不做全脸模糊。'; break;
     case 'remove': task = '只移除用户涂抹选区（mask）内的目标物体，以相邻背景、纹理、光线和透视补全空缺。严格保护选区外所有内容；不要增加新主体，不把遮罩图或涂抹标记画入结果。'; break;
     case 'people': task = `去除背景中的路人或游客，以邻近背景结构自然修复遮挡区域。默认保护前景主体、主要人物及其随行者，保留主要人物的身份、服装和身体细节；不能确定是否是路人的人物应保留。${hasSelection ? '此次只移除涂抹选区内的背景路人，不触碰选区外人物。' : '只移除明确属于背景的非主体路人，不删除前景主体。'}`; break;
-    case 'add': task = '仅在用户涂抹的选区内，按补充要求添加指定内容；正确匹配原照片的透视、尺寸、遮挡、光线与接触阴影。新增主体应完整呈现：人物或动物须保留完整头部、身体及必要的四肢，不以选区边缘切断主体；根据选区可用空间合理安排大小，不能只生成局部躯干来满足放大要求。用户要求拥抱等互动时，按描述安排前后遮挡，允许新物体自然遮住原主体的局部衣物，但不要重绘原人物的脸或移动头部，未被遮挡的服装与姿态仍应保留；不以拼接断肢代替完整肢体。严格保护选区外所有内容，不移动已有主体，不擅自新增选区外对象，不把涂抹标记画入结果。'; break;
+    case 'add': {
+      const scope = hasSelection
+        ? '仅在用户涂抹的选区内，按补充要求添加指定内容。根据选区可用空间合理安排大小，不以选区边缘切断新增主体。严格保护选区外所有内容，不擅自新增选区外对象。'
+        : '用户未指定绿色编辑选区：根据补充要求自主安排新增内容的位置、大小与前后遮挡，不受绿色选区限制。尽量保留与任务无关的原有内容，仅做完成本次添加或互动所需的修改。';
+      task = `${scope}正确匹配原照片的透视、尺寸、遮挡、光线与接触阴影。新增主体应完整呈现：人物或动物须保留完整头部、身体及必要的四肢，不能只生成局部躯干来满足放大要求。用户要求拥抱等互动时，按描述安排前后遮挡，允许新物体自然遮住原主体的局部衣物，但不要重绘原人物的脸或移动头部，未被遮挡的服装与姿态仍应保留；不以拼接断肢代替完整肢体。不移动已有主体，不把涂抹标记画入结果。`;
+      break;
+    }
     case 'sky': {
       const sky = input.skyId ? SKY_PRESETS.find(preset => preset.id === input.skyId) : SKY_PRESETS[0];
       if (!sky) throw new RetouchError('INPUT', '没有找到所选天空预设，请重新选择。');
@@ -83,8 +91,9 @@ export function buildCreativePrompt(input: CreativePromptInput): string {
     default: throw new RetouchError('INPUT', '不支持的修图工具。');
   }
   const selectionGuard = hasSelection ? '随附选区为本次唯一可编辑范围。选区外所有像素必须保持原样，即使是风格转换、天空反光或光线适配也不能越过选区。' : '';
+  const protectionGuard = hasProtection ? '随附蒙版标明了不可编辑的保护区，保护区优先于任何生成要求，必须保留原有像素与位置。未指定绿色编辑选区时，保护区以外可按任务自由布局，保护区不是新物体的放置范围。' : '';
   const referenceGuard = hasReference && tool !== 'match' ? '第 2 张图仅为风格/色调参考，只按本任务允许的范围迁移视觉表现，不复制参考图中的人物、服装、主体或构图。' : '';
-  return [identity, renderGuard, task, referenceGuard, selectionGuard, `编辑力度：${amount}/100；0 表示保持原图，100 仍须保持主体辨识与编辑范围。`, custom ? `补充要求：${custom}\n以上身份、构图和选区保护约束始终适用。` : ''].filter(Boolean).join('\n');
+  return [identity, renderGuard, task, referenceGuard, selectionGuard, protectionGuard, `编辑力度：${amount}/100；0 表示保持原图，100 仍须保持主体辨识与编辑范围。`, custom ? `补充要求：${custom}\n以上身份、构图和选区保护约束始终适用。` : ''].filter(Boolean).join('\n');
 }
 
 /** 保留 0.1 调用合同：去物调用方已负责实际 mask 校验。 */
