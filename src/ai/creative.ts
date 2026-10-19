@@ -91,7 +91,7 @@ export function buildCreativePrompt(input: CreativePromptInput): string {
     default: throw new RetouchError('INPUT', '不支持的修图工具。');
   }
   const selectionGuard = hasSelection ? '随附选区为本次唯一可编辑范围。选区外所有像素必须保持原样，即使是风格转换、天空反光或光线适配也不能越过选区。' : '';
-  const protectionGuard = hasProtection ? '随附蒙版标明了不可编辑的保护区，保护区优先于任何生成要求，必须保留原有像素与位置。未指定绿色编辑选区时，保护区以外可按任务自由布局，保护区不是新物体的放置范围。' : '';
+  const protectionGuard = hasProtection ? '随附蒙版标明了不可编辑的保护区，保护区优先于任何生成要求，必须保留原有像素与位置。保护头部时，保持原头部、颈部和肩膀的相对位置、倾斜角度与尺寸，不重画或挪动保护区旁的脖子及下颌，不改变其肤色和光线，不生成双重轮廓。保持保护区边界内外的原有结构和光影连续；不要通过重做人物身体来适配新增对象。未指定绿色编辑选区时，保护区以外可按任务自由布局，保护区不是新物体的放置范围。' : '';
   const referenceGuard = hasReference && tool !== 'match' ? '第 2 张图仅为风格/色调参考，只按本任务允许的范围迁移视觉表现，不复制参考图中的人物、服装、主体或构图。' : '';
   return [identity, renderGuard, task, referenceGuard, selectionGuard, protectionGuard, `编辑力度：${amount}/100；0 表示保持原图，100 仍须保持主体辨识与编辑范围。`, custom ? `补充要求：${custom}\n以上身份、构图和选区保护约束始终适用。` : ''].filter(Boolean).join('\n');
 }

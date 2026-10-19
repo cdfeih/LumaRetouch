@@ -127,14 +127,18 @@ try {
     context.fillStyle = '#7398b1'; context.fillRect(0, 0, 640, 480);
     context.fillStyle = '#285b6e';
     for (let y = 0; y < 480; y += 32) context.fillRect(0, y, 150, 9);
-    // 仅用几何人脸替身检查身份区域原像素，不使用用户照片。
-    context.fillStyle = '#f0c8a3'; context.beginPath(); context.arc(320, 192, 65, 0, 2 * Math.PI); context.fill();
-    context.fillStyle = '#283747'; context.fillRect(290, 177, 14, 10); context.fillRect(337, 177, 14, 10);
-    context.fillStyle = '#a86a61'; context.fillRect(309, 213, 27, 7);
+    // 模型 fixture 保留同位置面部结构；移除受保护头部已由新回归验证拒绝。
+    const face = color => {
+      context.fillStyle = color; context.beginPath(); context.arc(320, 192, 65, 0, 2 * Math.PI); context.fill();
+      context.fillStyle = '#283747'; context.fillRect(290, 177, 14, 10); context.fillRect(337, 177, 14, 10);
+      context.fillStyle = '#a86a61'; context.fillRect(309, 213, 27, 7);
+    };
+    face('#f0c8a3');
     const original = canvas.toDataURL('image/png').split(',')[1];
     context.fillStyle = '#8d9d7a'; context.fillRect(0, 0, 640, 480);
     const second = canvas.toDataURL('image/png').split(',')[1];
     context.fillStyle = '#df4967'; context.fillRect(0, 0, 640, 480);
+    face('#eab9a3');
     return { original, second, model: canvas.toDataURL('image/png').split(',')[1] };
   });
   modelBase64 = fixtures.model;

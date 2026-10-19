@@ -8,6 +8,13 @@ const config = (kind: ProviderConfig['kind']): ProviderConfig => ({ kind, apiKey
 const input = (kind: ProviderConfig['kind'] = 'openai'): EditImageInput => ({ provider: config(kind), imageBase64: PNG, mimeType: 'image/png', prompt: '自然修复照片' });
 const response = (body: unknown, status = 200): HttpResponse => ({ status, body: JSON.stringify(body) });
 const imageResponse = () => response({ data: [{ b64_json: PNG }] });
+async function rejectedEdit(edit: EditImageInput, transport: HttpTransport): Promise<RetouchError> {
+  try { await editImage(edit, transport); } catch (error) {
+    expect(error).toBeInstanceOf(RetouchError);
+    return error as RetouchError;
+  }
+  throw new Error('应拒绝错误响应');
+}
 
 describe('真实图像接口合同', () => {
   it.each([
@@ -104,6 +111,72 @@ describe('真实图像接口合同', () => {
 });
 
 describe('失败及取消', () => {
+  it.each([
+    ['OutputImageSensitiveContentDetected.PolicyViolation', 'The request was blocked.'],
+    ['', 'The request failed because the output image may be related to copyright restriction.'],
+    ['InvalidParameter', 'The request failed because the output image may be related to copyright restrictions.'],
+  ])('方舟版权拦截 %s 优先于 HTTP 400 参数错误，不重试且保留请求编号', async (code, detail) => {
+    const transport = vi.fn<HttpTransport>().mockResolvedValue(response({ error: { code, message: `${detail} Request id: qa-copyright-400` } }, 400));
+    const error = await rejectedEdit(input('ark'), transport);
+    expect(error).toMatchObject({
+      code: 'CONTENT_FILTER', status: 400,
+      message: expect.stringContaining('生成图片可能涉及版权限制'),
+    });
+    expect(error.message).toContain('qa-copyright-400');
+    expect(error.message).not.toContain('请求参数不被服务支持');
+    expect(transport).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    'InputTextSensitiveContentDetected',
+    'InputImageSensitiveContentDetected.PolicyViolation',
+    'OutputImageSensitiveContentDetected',
+    'OutputImageSensitiveContentDetected.RiskViolation',
+    'InputImageRiskDetection',
+    'content_policy_violation',
+    'safety_violation',
+    'moderation_blocked',
+  ])('普通内容检查 %s 不误报为版权或参数错误', async code => {
+    const transport = vi.fn<HttpTransport>().mockResolvedValue(response({ error: { code, message: 'Content was blocked. Request id: qa-content' } }, 400));
+    const error = await rejectedEdit(input('ark'), transport);
+    expect(error).toMatchObject({ code: 'CONTENT_FILTER', status: 400, message: expect.stringContaining('内容检查') });
+    expect(error.message).not.toContain('版权');
+    expect(error.message).not.toContain('请求参数不被服务支持');
+    expect(error.message).toContain('qa-content');
+    expect(transport).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    { error: { code: 'OutputImageSensitiveContentDetected.PolicyViolation', message: 'Request id: qa-copyright-200' } },
+    { data: [{ error: { code: 'OutputImageSensitiveContentDetected.PolicyViolation', message: 'Request id: qa-copyright-200' } }] },
+    { data: [{}, { error: { code: '', message: 'The output image may be related to copyright restriction. Request id: qa-copyright-200' } }] },
+  ])('HTTP 200 的顶层或逐图版权错误仍视为失败', async body => {
+    const transport = vi.fn<HttpTransport>().mockResolvedValue(response(body));
+    const error = await rejectedEdit(input('ark'), transport);
+    expect(error).toMatchObject({ code: 'CONTENT_FILTER', message: expect.stringContaining('版权限制') });
+    expect(error.message).toContain('qa-copyright-200');
+    expect(transport).toHaveBeenCalledOnce();
+  });
+
+  it('真正 InvalidParameter 仍保留参数错误分类', async () => {
+    const transport = vi.fn<HttpTransport>().mockResolvedValue(response({ error: { code: 'InvalidParameter', message: 'The size parameter is invalid. Request id: qa-invalid-size' } }, 400));
+    await expect(editImage(input('ark'), transport)).rejects.toMatchObject({ code: 'HTTP', status: 400, message: expect.stringContaining('请求参数不被服务支持') });
+    expect(transport).toHaveBeenCalledOnce();
+  });
+
+  it('版权错误同样脱敏，并在长提示截断后保留请求编号', async () => {
+    const detail = `The output image may be related to copyright restriction. secret-client-key Bearer another-private-token https://host.test/?token=secret-client-key data:image/png;base64,${PNG}; ${'More detail. '.repeat(30)} Request id: qa-copyright-long`;
+    const transport = vi.fn<HttpTransport>().mockResolvedValue(response({ data: [{ error: { code: 'OutputImageSensitiveContentDetected.PolicyViolation', message: detail } }] }));
+    const error = await rejectedEdit(input('ark'), transport);
+    expect(error).toMatchObject({ code: 'CONTENT_FILTER' });
+    expect(error.message).toContain('qa-copyright-long');
+    expect(error.message).not.toContain('secret-client-key');
+    expect(error.message).not.toContain('another-private-token');
+    expect(error.message).not.toContain('https://host.test');
+    expect(error.message).not.toContain(PNG);
+    expect(transport).toHaveBeenCalledOnce();
+  });
+
   it('服务端内部错误保留 HTTP 状态和请求编号，不自动重试计费请求', async () => {
     const transport = vi.fn<HttpTransport>().mockResolvedValue(response({ error: { code: 'InternalServiceError', message: 'The service encountered an unexpected internal error. Request id: qa-request-500' } }, 500));
     await expect(editImage(input('ark'), transport)).rejects.toMatchObject({ code: 'HTTP', status: 500, message: expect.stringContaining('HTTP 500') });

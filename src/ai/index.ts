@@ -69,11 +69,27 @@ function safeMessage(message: string, apiKey: string): string {
   for (const secret of [apiKey.trim(), encodeURIComponent(apiKey.trim())]) {
     if (secret) safe = safe.split(secret).join('[已隐藏]');
   }
-  return safe.replace(/Bearer\s+[^\s,"'<>]+/gi, 'Bearer [已隐藏]')
+  safe = safe.replace(/Bearer\s+[^\s,"'<>]+/gi, 'Bearer [已隐藏]')
     .replace(/\b(?:sk-|AIza)[A-Za-z0-9_-]{8,}/g, '[已隐藏]')
     .replace(/data:image\/[^;]+;base64,[A-Za-z0-9+/=\s]+/gi, '[图片已隐藏]')
     .replace(/https?:\/\/[^\s"'<>]+/gi, '[服务链接已隐藏]')
-    .replace(/[\u0000-\u001f]/g, ' ').slice(0, 240);
+    .replace(/[\u0000-\u001f]/g, ' ');
+  const summary = safe.slice(0, 240);
+  // 请求编号常位于长错误末尾；仅从已脱敏的内容提取，便于向服务商反馈。
+  const requestId = /\brequest[\s_-]*id\s*[:=]\s*([A-Za-z0-9][A-Za-z0-9_-]{0,127})\b/i.exec(safe)?.[1];
+  return requestId && !summary.includes(requestId) ? `${summary} Request id: ${requestId}` : summary;
+}
+
+/** 方舟把版权与内容检查也返回为 HTTP 400，优先读取具体原因。 */
+function contentFilterMessage(code: string, detail = ''): string | undefined {
+  if (/^OutputImageSensitiveContentDetected\.PolicyViolation$/i.test(code) || /copyright\s+restrictions?/i.test(detail)) {
+    const subject = /^Output/i.test(code) || /output\s+image/i.test(detail) ? '生成图片' : '请求内容';
+    return `图像服务认为${subject}可能涉及版权限制，已拦截此次请求。请检查修图描述或素材；如认为误判，可凭请求编号向服务商反馈。`;
+  }
+  if (/content_policy|safety|moderation|content_filter|SensitiveContentDetected|(?:Input|Output)(?:Text|Image|Video|Audio)RiskDetection/i.test(code)) {
+    return '请求触发了图像服务的内容检查，未返回可用图片。请检查照片或修图要求；如认为误判，可凭请求编号向服务商反馈。';
+  }
+  return undefined;
 }
 
 function parseResponse(response: HttpResponse, apiKey: string): JsonObject {
@@ -93,8 +109,8 @@ function parseResponse(response: HttpResponse, apiKey: string): JsonObject {
     const detail = text(failure?.message);
     const fallback = reasons[status] ?? (status >= 500 ? `图像服务内部错误（HTTP ${status}），请稍后手动重试；持续出现时可向服务商提供请求编号。` : '图像服务拒绝了请求。');
     const code = text(failure?.code) ?? '';
-    const filtered = /content_policy|safety|moderation|content_filter/i.test(code);
-    throw new RetouchError(filtered ? 'CONTENT_FILTER' : 'HTTP', `${fallback}${detail ? ` 服务提示：${safeMessage(detail, apiKey)}` : ''}`, status);
+    const filtered = contentFilterMessage(code, detail);
+    throw new RetouchError(filtered ? 'CONTENT_FILTER' : 'HTTP', `${filtered ?? fallback}${detail ? ` 服务提示：${safeMessage(detail, apiKey)}` : ''}`, status);
   }
   if (!parsed) throw new RetouchError('INVALID_RESPONSE', '服务没有返回有效的图像 API JSON，请确认地址指向图像编辑接口。');
   return parsed;
@@ -230,8 +246,12 @@ async function extractStandardImage(response: JsonObject, input: EditImageInput,
       return imageResult(downloaded.body, contentType);
     }
   }
-  const imageError = asObject(asObject(images[0])?.error);
-  if (/safety|content|moderation/i.test(text(imageError?.code) ?? '')) throw new RetouchError('CONTENT_FILTER', '服务的内容检查未返回图片，请调整照片或修图要求。');
+  for (const value of images) {
+    const imageError = asObject(asObject(value)?.error);
+    const detail = text(imageError?.message);
+    const filtered = contentFilterMessage(text(imageError?.code) ?? '', detail);
+    if (filtered) throw new RetouchError('CONTENT_FILTER', `${filtered}${detail ? ` 服务提示：${safeMessage(detail, input.provider.apiKey)}` : ''}`);
+  }
   throw new RetouchError('NO_IMAGE', '服务没有返回编辑后的图片。请确认此模型支持图像编辑，并检查账号权限或内容限制。');
 }
 

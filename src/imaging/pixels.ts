@@ -47,18 +47,22 @@ export function compositePixelBuffers(
   blend: number,
   output = new Uint8ClampedArray(original.length),
   protection: Uint8ClampedArray | null = null,
+  exteriorCoverage: Uint8ClampedArray | null = null,
 ): Uint8ClampedArray {
   checkBuffers(original, edited)
   checkBuffers(original, output)
   if (mask) checkBuffers(original, mask)
   if (protection) checkBuffers(original, protection)
+  if (exteriorCoverage && exteriorCoverage.length !== original.length / 4) {
+    throw new Error('保护区过渡的像素尺寸不一致。')
+  }
   const strength = clamp(blend, 0, 1)
 
   for (let i = 0; i < original.length; i += 4) {
     // Protection is deliberately binary, including anti-aliased alpha=1 edges:
     // any protected pixel keeps its original decoded RGBA exactly.
     const coverage = protection && protection[i + 3] > 0
-      ? 0 : strength * (mask ? mask[i + 3] / 255 : 1)
+      ? 0 : strength * (mask ? mask[i + 3] / 255 : 1) * (exteriorCoverage ? exteriorCoverage[i / 4] / 255 : 1)
     const sourceAlpha = (edited[i + 3] / 255) * coverage
     if (sourceAlpha === 0) {
       output[i] = original[i]

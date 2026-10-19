@@ -5,6 +5,7 @@ import {
   maskPixelBuffers,
 } from './pixels'
 import type { Adjustments } from './pixels'
+import { protectionTransitionCoverage, protectionTransitionRadius } from './protection'
 
 export { DEFAULT_ADJUSTMENTS } from './pixels'
 export type { Adjustments } from './pixels'
@@ -249,9 +250,10 @@ export async function composeEdit(
       throw new Error('模型返回画幅与原图不一致，已保留当前照片。请补充“保持原图画幅和构图”的要求，或更换模型后重试。')
     }
     const stripHeight = Math.min(256, height)
+    const transitionRadius = protectionCanvas ? protectionTransitionRadius(width, height) : 0
     const editStrip = canvas(width, stripHeight)
     const maskStrip = maskCanvas ? canvas(width, stripHeight) : null
-    const protectionStrip = protectionCanvas ? canvas(width, stripHeight) : null
+    const protectionStrip = protectionCanvas ? canvas(width, Math.min(height, stripHeight + transitionRadius * 2)) : null
     if (protectionStrip) protectionStrip.context.imageSmoothingEnabled = false
     for (let y = 0; y < height; y += stripHeight) {
       const rows = Math.min(stripHeight, height - y)
@@ -266,12 +268,20 @@ export async function composeEdit(
         maskPixels = maskStrip.context.getImageData(0, 0, width, rows).data
       }
       let protectionPixels: Uint8ClampedArray | null = null
+      let exteriorCoverage: Uint8ClampedArray | null = null
       if (protectionCanvas && protectionStrip) {
-        protectionStrip.context.clearRect(0, 0, width, stripHeight)
-        protectionStrip.context.drawImage(protectionCanvas, 0, -y, width, height)
-        protectionPixels = protectionStrip.context.getImageData(0, 0, width, rows).data
+        const firstRow = Math.max(0, y - transitionRadius)
+        const haloRows = Math.min(height, y + rows + transitionRadius) - firstRow
+        protectionStrip.context.clearRect(0, 0, width, protectionStrip.canvas.height)
+        protectionStrip.context.drawImage(protectionCanvas, 0, -firstRow, width, height)
+        const haloPixels = protectionStrip.context.getImageData(0, 0, width, haloRows).data
+        const offset = (y - firstRow) * width * 4
+        protectionPixels = haloPixels.subarray(offset, offset + width * rows * 4)
+        if (transitionRadius > 0) {
+          exteriorCoverage = protectionTransitionCoverage(haloPixels, width, haloRows, transitionRadius, y - firstRow, rows)
+        }
       }
-      compositePixelBuffers(originalPixels.data, editPixels.data, maskPixels, blend, originalPixels.data, protectionPixels)
+      compositePixelBuffers(originalPixels.data, editPixels.data, maskPixels, blend, originalPixels.data, protectionPixels, exteriorCoverage)
       target.context.putImageData(originalPixels, 0, y)
     }
     return toDataUrl(target.canvas)

@@ -126,10 +126,15 @@ try {
   const fixture = await page.evaluate(() => {
     const canvas = document.createElement('canvas'); canvas.width = 640; canvas.height = 480;
     const ctx = canvas.getContext('2d'); ctx.fillStyle = '#7598b2'; ctx.fillRect(0, 0, 640, 480);
-    ctx.fillStyle = '#edc9a6'; ctx.beginPath(); ctx.arc(320, 192, 65, 0, 2 * Math.PI); ctx.fill();
-    ctx.fillStyle = '#283b48'; ctx.fillRect(290, 178, 14, 10); ctx.fillRect(337, 178, 14, 10);
+    const face = color => {
+      ctx.fillStyle = color; ctx.beginPath(); ctx.arc(320, 192, 65, 0, 2 * Math.PI); ctx.fill();
+      ctx.fillStyle = '#283b48'; ctx.fillRect(290, 178, 14, 10); ctx.fillRect(337, 178, 14, 10);
+    };
+    face('#edc9a6');
     const source = canvas.toDataURL().split(',')[1];
     ctx.fillStyle = '#dd526b'; ctx.fillRect(0, 0, 640, 480);
+    // 同一头部位置但改变肤色，继续验证红区像素来自原图而非模型。
+    face('#eab9a3');
     return { source, model: canvas.toDataURL().split(',')[1] };
   });
   modelBase64 = fixture.model;

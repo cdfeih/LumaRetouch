@@ -93,6 +93,19 @@ describe('masked editing', () => {
     expect(compositePixelBuffers(original, edited, empty, 1, undefined, protection)).toEqual(original)
     expect(maskPixelBuffers(empty, protection).hasSelection).toBe(false)
   })
+
+  it('fades only the editable exterior while hard protection, green limits, and strength remain authoritative', () => {
+    const original = new Uint8ClampedArray([10, 20, 30, 155, 10, 20, 30, 255, 10, 20, 30, 255, 10, 20, 30, 255])
+    const edited = new Uint8ClampedArray([210, 220, 230, 255, 210, 220, 230, 255, 210, 220, 230, 255, 210, 220, 230, 255])
+    const protection = new Uint8ClampedArray([255, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+    const selection = new Uint8ClampedArray([255, 255, 255, 255, 255, 255, 255, 255, 0, 0, 0, 0, 255, 255, 255, 255])
+    const exterior = new Uint8ClampedArray([255, 128, 255, 255])
+    expect([...compositePixelBuffers(original, edited, selection, 0.5, undefined, protection, exterior)])
+      .toEqual([10, 20, 30, 155, 60, 70, 80, 255, 10, 20, 30, 255, 110, 120, 130, 255])
+    const expected = compositePixelBuffers(original, edited, selection, 0.5, undefined, protection, exterior)
+    expect(compositePixelBuffers(original, edited, selection, 0.5, original, protection, exterior)).toEqual(expected)
+    expect(() => compositePixelBuffers(original, edited, null, 1, undefined, protection, new Uint8ClampedArray(1))).toThrow('尺寸')
+  })
 })
 
 describe('local finishing controls', () => {
