@@ -96,7 +96,9 @@ node tests/creative.mjs
 node tests/desktop.mjs
 node --test electron/http.test.cjs
 pnpm desktop:dev
+# 打包windows版
 pnpm desktop:dist
+# 打包android版
 pnpm android:apk
 ```
 
