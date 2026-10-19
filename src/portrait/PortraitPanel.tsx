@@ -12,7 +12,13 @@ import { deletePortraitPreset, loadPortraitPresets, PRESET_STORAGE_KEY, savePort
 import { BODY_FIELDS, DEFAULT_PORTRAIT_SETTINGS, equalPortraitSettings, normalizePortraitSettings, PORTRAIT_FIELDS, PORTRAIT_SECTIONS, SHAPE_FIELDS, ZERO_PORTRAIT_SETTINGS } from './settings';
 import type { PortraitSection, PortraitSettings } from './settings';
 
-export interface PortraitPanelHandle { apply(): Promise<void>; cancel(): void }
+export interface PortraitPanelHandle { apply(): Promise<void>; cancel(): void; getSettings(): PortraitSettings }
+export interface PortraitSessionSnapshot {
+  section: PortraitSection; people: PortraitPerson[]; scanned: boolean; bodyScanned: boolean;
+  selected: string; parameters: Record<string, PortraitSettings>; common: PortraitSettings;
+  detectedFaces: PortraitFace[] | null; detectedBodies: PortraitBody[] | null;
+  deformationHistory: Record<string, ShapeSettings>; baseline: string; knownSources: string[];
+}
 interface Props {
   source: string;
   disabled: boolean;
@@ -23,6 +29,8 @@ interface Props {
   onFacesChange(people: PortraitPerson[], selected: string): void;
   onSectionChange(section: PortraitSection): void;
   notify(text: string, error?: boolean): void;
+  session?: PortraitSessionSnapshot;
+  onSessionChange?(snapshot: PortraitSessionSnapshot): void;
 }
 
 const ZERO_SHAPE = Object.fromEntries(SHAPE_FIELDS.map(key => [key, 0])) as ShapeSettings;
@@ -61,26 +69,34 @@ function freezeCanvas(canvas: HTMLCanvasElement | null) {
 
 export const PortraitPanel = forwardRef<PortraitPanelHandle, Props>(function PortraitPanel(props, ref) {
   const { source, disabled, active, onBusy, onApply, onFacesChange, onSectionChange, notify, getMasks } = props;
-  const [section, setSection] = useState<PortraitSection>('natural');
-  const [people, setPeople] = useState<PortraitPerson[]>([]);
-  const [scanned, setScanned] = useState(false);
-  const [bodyScanned, setBodyScanned] = useState(false);
-  const [selected, setSelected] = useState('all');
-  const [parameters, setParameters] = useState<Record<string, PortraitSettings>>({});
-  const [common, setCommon] = useState<PortraitSettings>({ ...DEFAULT_PORTRAIT_SETTINGS });
+  const initial = useRef(props.session).current;
+  const [section, setSection] = useState<PortraitSection>(initial?.section ?? 'natural');
+  const [people, setPeople] = useState<PortraitPerson[]>(initial?.people ?? []);
+  const [scanned, setScanned] = useState(initial?.scanned ?? false);
+  const [bodyScanned, setBodyScanned] = useState(initial?.bodyScanned ?? false);
+  const [selected, setSelected] = useState(initial?.selected ?? 'all');
+  const [parameters, setParameters] = useState<Record<string, PortraitSettings>>(initial?.parameters ?? {});
+  const [common, setCommon] = useState<PortraitSettings>(initial?.common ?? { ...DEFAULT_PORTRAIT_SETTINGS });
   const [presets, setPresets] = useState(loadPortraitPresets);
   const [presetName, setPresetName] = useState('');
   const parametersRef = useRef(parameters);
-  const detectedFaces = useRef<PortraitFace[] | null>(null);
-  const detectedBodies = useRef<PortraitBody[] | null>(null);
-  const deformationHistory = useRef<Record<string, ShapeSettings>>({});
-  const baseline = useRef(source);
-  const knownSources = useRef(new Set([source]));
+  const detectedFaces = useRef<PortraitFace[] | null>(initial?.detectedFaces ?? null);
+  const detectedBodies = useRef<PortraitBody[] | null>(initial?.detectedBodies ?? null);
+  const deformationHistory = useRef<Record<string, ShapeSettings>>(initial?.deformationHistory ?? {});
+  const baseline = useRef(initial?.baseline ?? source);
+  const knownSources = useRef(new Set(initial?.knownSources ?? [source]));
   const job = useRef<AbortController | null>(null);
   const firstSettings = people.length ? parameters[people[0].id] : undefined;
   const referenceSettings = selected === 'all' ? firstSettings || common : parameters[selected] || common;
   const targets = selected === 'all' ? people : people.filter(person => person.id === selected);
   const mixed = selected === 'all' && people.some(person => parameters[person.id] && !equalPortraitSettings(parameters[person.id], referenceSettings));
+  const sessionSnapshot = useRef<PortraitSessionSnapshot | null>(null);
+  sessionSnapshot.current = { section, people, scanned, bodyScanned, selected, parameters, common,
+    detectedFaces: detectedFaces.current, detectedBodies: detectedBodies.current,
+    deformationHistory: deformationHistory.current, baseline: baseline.current, knownSources: [...knownSources.current] };
+  useEffect(() => { if (sessionSnapshot.current) props.onSessionChange?.(sessionSnapshot.current); });
+  useEffect(() => () => { if (sessionSnapshot.current) props.onSessionChange?.(sessionSnapshot.current); }, []);
+  useEffect(() => { if (active) onFacesChange(people, selected); }, [active, people, selected, onFacesChange]);
 
   function storeParameters(next: Record<string, PortraitSettings>) { parametersRef.current = next; setParameters(next); }
   useEffect(() => {
@@ -162,7 +178,7 @@ export const PortraitPanel = forwardRef<PortraitPanelHandle, Props>(function Por
       else notify(error instanceof Error ? error.message : '本地人像处理失败，请重试。', true);
     } finally { job.current = null; onBusy(false); }
   }
-  useImperativeHandle(ref, () => ({ apply: () => perform(true), cancel: () => job.current?.abort() }));
+  useImperativeHandle(ref, () => ({ apply: () => perform(true), cancel: () => job.current?.abort(), getSettings: () => ({ ...referenceSettings }) }));
 
   function changeSettings(settings: Partial<PortraitSettings>) {
     if (selected === 'all') {

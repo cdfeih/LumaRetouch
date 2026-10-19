@@ -125,7 +125,15 @@ export function adjustPixelBuffer(
     return output
   }
 
-  const exposureGain = 2 ** exposure
+  // EV scales scene light, rather than the gamma-encoded sRGB bytes. Build a
+  // small table once per adjustment so full-size photos do not run powers for
+  // every channel. Bypass it at 0 EV to preserve the existing color controls.
+  const exposed = exposure === 0 ? null : Float64Array.from({ length: 256 }, (_, value) => {
+    const encoded = value / 255
+    const linear = encoded <= 0.04045 ? encoded / 12.92 : ((encoded + 0.055) / 1.055) ** 2.4
+    const light = linear * 2 ** exposure
+    return 255 * (light <= 0.0031308 ? light * 12.92 : 1.055 * light ** (1 / 2.4) - 0.055)
+  })
   const contrastGain = 1 + contrast / 100
   const saturationGain = 1 + saturation / 100
   const redGain = (1 + temperature * 0.002) * (1 + tint * 0.00075)
@@ -133,9 +141,9 @@ export function adjustPixelBuffer(
   const blueGain = (1 - temperature * 0.002) * (1 + tint * 0.00075)
 
   for (let i = 0; i < input.length; i += 4) {
-    const r = (input[i] * exposureGain * redGain - 127.5) * contrastGain + 127.5
-    const g = (input[i + 1] * exposureGain * greenGain - 127.5) * contrastGain + 127.5
-    const b = (input[i + 2] * exposureGain * blueGain - 127.5) * contrastGain + 127.5
+    const r = ((exposed ? exposed[input[i]] : input[i]) * redGain - 127.5) * contrastGain + 127.5
+    const g = ((exposed ? exposed[input[i + 1]] : input[i + 1]) * greenGain - 127.5) * contrastGain + 127.5
+    const b = ((exposed ? exposed[input[i + 2]] : input[i + 2]) * blueGain - 127.5) * contrastGain + 127.5
     const luminance = r * 0.2126 + g * 0.7152 + b * 0.0722
     output[i] = Math.round(luminance + (r - luminance) * saturationGain)
     output[i + 1] = Math.round(luminance + (g - luminance) * saturationGain)

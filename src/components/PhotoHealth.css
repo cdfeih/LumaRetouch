@@ -1,0 +1,36 @@
+.photo-health { min-width: 0; grid-column: 1 / -1; margin-top: 17px; border: 1px solid #3a4c31; border-radius: 9px; background: #1d2818; overflow: hidden; }
+.photo-health-toggle { display: flex; width: 100%; gap: 10px; align-items: center; padding: 13px; color: #bbd9aa; background: transparent; text-align: left; }
+.photo-health-toggle:hover:not(:disabled) { background: #2a3921; }
+.photo-health-toggle > span { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 4px; }
+.photo-health-toggle strong { font-size: 12px; font-weight: 550; }
+.photo-health-toggle small { font-size: 9px; line-height: 1.5; color: #91a580; overflow-wrap: anywhere; }
+.photo-health-toggle > svg:last-child { transition: transform .16s; }
+.photo-health-expanded { transform: rotate(180deg); }
+.photo-health-content { padding: 0 13px 14px; min-width: 0; }
+.photo-health-copy, .photo-health-disclaimer, .photo-health-neutral { font-size: 10px; line-height: 1.8; color: #a1b293; margin: 0 0 12px; overflow-wrap: anywhere; }
+.photo-health-loading { display: flex; align-items: center; gap: 8px; margin: 8px 0 16px; font-size: 11px; color: #c7e4b6; }
+.photo-health-error { margin: 8px 0 12px; font-size: 10px; line-height: 1.7; color: #f0c0a8; overflow-wrap: anywhere; }
+.photo-health-chart { padding: 10px 9px 8px; border: 1px solid #3a4b31; border-radius: 6px; background: #152010; }
+.photo-health-chart svg { display: block; width: 100%; height: auto; fill: #adcf98; }
+.photo-health-axis { stroke: #526647; stroke-width: 1; }
+.photo-health-chart-labels { display: flex; justify-content: space-between; font-size: 9px; color: #8ba17b; }
+.photo-health-facts { margin: 12px 0; font-size: 10px; }
+.photo-health-facts > div { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding-block: 4px; }
+.photo-health-facts dt { color: #98ae87; }
+.photo-health-facts dd { margin: 0; color: #c3d9b6; text-align: right; overflow-wrap: anywhere; min-width: 0; }
+.photo-health-warnings { margin: 0 0 13px; padding-left: 15px; color: #c0caa5; font-size: 10px; line-height: 1.8; }
+.photo-health-warnings li + li { margin-top: 6px; }
+.photo-health-suggestion, .photo-health-inspect { display: flex; align-items: center; justify-content: center; gap: 7px; width: 100%; padding: 10px; border: 1px solid #5b774a; border-radius: 6px; font-size: 10px; line-height: 1.6; overflow-wrap: anywhere; }
+.photo-health-suggestion { margin-block: 9px; color: #203117; background: #b9e1a5; font-weight: 550; }
+.photo-health-suggestion:hover:not(:disabled) { background: #cdf1bc; }
+.photo-health-inspect { color: #b4caa4; background: transparent; }
+.photo-health-inspect:hover:not(:disabled) { background: #2c3c23; }
+.photo-health-disclaimer { margin: 11px 0 0; color: #829775; font-size: 9px; }
+@media (max-width: 560px) {
+  .photo-health-toggle { padding: 13px 14px; }
+  .photo-health-toggle strong { font-size: 13px; }
+  .photo-health-toggle small, .photo-health-facts, .photo-health-copy, .photo-health-neutral, .photo-health-warnings { font-size: 11px; }
+  .photo-health-toggle small { font-size: 10px; }
+  .photo-health-content { padding-inline: 14px; }
+  .photo-health-suggestion, .photo-health-inspect { font-size: 11px; min-height: 38px; }
+}

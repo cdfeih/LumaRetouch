@@ -114,9 +114,26 @@ describe('local finishing controls', () => {
     expect(adjustPixelBuffer(original, { ...DEFAULT_ADJUSTMENTS })).toEqual(original)
   })
 
-  it('makes one EV exactly twice as bright without changing alpha', () => {
+  it('applies one EV in linear light without blowing out middle gray or changing alpha', () => {
     expect([...adjustPixelBuffer(new Uint8ClampedArray([25, 50, 100, 120]), { ...DEFAULT_ADJUSTMENTS, exposure: 1 })])
-      .toEqual([50, 100, 200, 120])
+      .toEqual([38, 71, 138, 120])
+    expect([...adjustPixelBuffer(new Uint8ClampedArray([128, 128, 128, 255]), { ...DEFAULT_ADJUSTMENTS, exposure: 1 })])
+      .toEqual([176, 176, 176, 255])
+  })
+
+  it('handles the sRGB dark segment, negative EV, and transparent pixels', () => {
+    const shadows = new Uint8ClampedArray([0, 4, 8, 0, 128, 200, 255, 63])
+    expect([...adjustPixelBuffer(shadows, { ...DEFAULT_ADJUSTMENTS, exposure: -1 })])
+      .toEqual([0, 2, 4, 0, 92, 146, 188, 63])
+    expect([...adjustPixelBuffer(new Uint8ClampedArray([0, 4, 8, 120]), { ...DEFAULT_ADJUSTMENTS, exposure: 1 })])
+      .toEqual([0, 8, 15, 120])
+  })
+
+  it('keeps the other finishing controls byte-identical at zero EV', () => {
+    const original = new Uint8ClampedArray([13, 79, 241, 17, 128, 90, 31, 255])
+    const values = { ...DEFAULT_ADJUSTMENTS, contrast: -23, saturation: 31, temperature: 17, tint: -29 }
+    expect([...adjustPixelBuffer(original, values)])
+      .toEqual([24, 94, 240, 17, 137, 101, 36, 255])
   })
 
   it('moves temperature toward amber and tint toward magenta', () => {

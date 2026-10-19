@@ -2,6 +2,9 @@ import { Capacitor, registerPlugin } from '@capacitor/core';
 import { Filesystem, Directory } from '@capacitor/filesystem';
 import { Share } from '@capacitor/share';
 import type { HttpRequest, HttpResponse, HttpTransport } from './ai/types';
+import { validateImageArchive } from '../electron/archive.mjs';
+
+export { MAX_ARCHIVE_BYTES } from '../electron/archive.mjs';
 
 declare global {
   interface Window {
@@ -113,4 +116,42 @@ export async function exportImage(base64: string, mimeType: string, suggestedNam
   link.href = url; link.download = `${name}.${extension}`; link.click();
   window.setTimeout(() => URL.revokeObjectURL(url), 30000);
   return { saved: true, message: '已开始下载照片' };
+}
+
+function archiveBase64(bytes: Uint8Array): string {
+  // Every full chunk is divisible by 3, so concatenated Base64 has no interior
+  // padding. A small per-chunk string avoids spreading a large array on stack.
+  const chunkSize = 24 * 1024;
+  let encoded = '';
+  for (let start = 0; start < bytes.length; start += chunkSize) {
+    let binary = '';
+    const end = Math.min(bytes.length, start + chunkSize);
+    for (let index = start; index < end; index++) binary += String.fromCharCode(bytes[index]);
+    encoded += btoa(binary);
+  }
+  return encoded;
+}
+
+/** Save an app-generated image ZIP through the existing explicit save/share UI. */
+export async function exportArchive(bytes: Uint8Array<ArrayBuffer>, suggestedName: string): Promise<{ saved: boolean; message: string }> {
+  validateImageArchive(bytes);
+  const name = suggestedName.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/\.zip$/i, '').slice(0, 100).replace(/[. ]+$/g, '') || '光修照片合集';
+  if (window.lumaNative) return window.lumaNative.exportImage({ base64: archiveBase64(bytes), mimeType: 'application/zip', suggestedName: `${name}.zip` });
+  if (Capacitor.isNativePlatform()) {
+    let file: { uri: string };
+    try { file = await Filesystem.writeFile({ path: `exports/${Date.now()}-${name}.zip`, data: archiveBase64(bytes), directory: Directory.Cache, recursive: true }); }
+    catch { throw new Error('压缩包写入手机缓存失败，请检查存储空间后重试。'); }
+    try {
+      await Share.share({ title: '导出照片压缩包', files: [file.uri], dialogTitle: '保存或分享照片压缩包' });
+      return { saved: true, message: '照片压缩包已交给系统分享，请在分享窗口选择保存位置' };
+    } catch (error) {
+      if (error instanceof Error && /cancel|取消/i.test(error.message)) return { saved: false, message: '已取消分享，压缩包仍保留在应用临时缓存' };
+      throw new Error('压缩包分享失败，请重试或更换保存方式。');
+    }
+  }
+  const url = URL.createObjectURL(new Blob([bytes], { type: 'application/zip' }));
+  const link = document.createElement('a');
+  link.href = url; link.download = `${name}.zip`; link.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 30000);
+  return { saved: true, message: '已开始下载照片压缩包' };
 }

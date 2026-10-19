@@ -253,6 +253,7 @@ export async function composeEdit(
     const transitionRadius = protectionCanvas ? protectionTransitionRadius(width, height) : 0
     const editStrip = canvas(width, stripHeight)
     const maskStrip = maskCanvas ? canvas(width, stripHeight) : null
+    if (maskStrip) maskStrip.context.imageSmoothingEnabled = false
     const protectionStrip = protectionCanvas ? canvas(width, Math.min(height, stripHeight + transitionRadius * 2)) : null
     if (protectionStrip) protectionStrip.context.imageSmoothingEnabled = false
     for (let y = 0; y < height; y += stripHeight) {
