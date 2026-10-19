@@ -1,0 +1,116 @@
+# 光修 AI · Luma Retouch
+
+面向 Android 与 Windows 的多模型照片精修工具。0.2 在磨皮、祛痘和涂抹去物的基础上，增加换天、去路人、添加内容、一键风格与参考图追色。参考像素蛋糕的官方功能分类，采用自有界面与实现；见[功能对照与实际边界](docs/feature-comparison.md)。
+
+## 可安装产物
+
+Git 仓库只提交源码与构建配置。下列安装包是本地构建产物，不随代码上传；克隆后可按「本地开发」章节重新构建。
+
+2026-10-19 已构建：
+
+- `release/windows/LumaRetouch-0.2.0-x64-setup.exe`：Windows x64 安装版。
+- `release/windows/LumaRetouch-0.2.0-x64-portable.exe`：Windows x64 便携版。
+- `release/android/LumaRetouch-0.2.0-debug.apk`：Android 7.0 及以上的预览 APK，使用开发签名。
+- `release/LumaRetouch-0.2.0-source.zip`：源码与构建配置，不包含依赖缓存。
+- `release/LumaRetouch-0.2.0-manifest.json`：产物大小、SHA-256 与验证范围。
+
+Windows 打包后的程序已验证导入、真实原生传输至本机测试服务、取消与保存照片。Android 已完成编译、签名及包内资源检查，尚未安装到安卓真机。所有模型测试均使用测试服务或受控响应，未验证真实付费模型的成片品质。
+
+## 使用
+
+1. 安装 Android APK（Android 7.0 及以上）或 Windows x64 安装包，也可以运行 Windows 便携版。
+2. 导入 JPEG、PNG 或 WebP 照片。最多同时打开 10 张，每张不超过 30 MB／4000 万像素。
+3. 在「模型设置」选择服务，填写模型名称、API 地址和自己的 API Key。服务商需已开通对应图像编辑能力与额度。
+4. 选择工具与预设；磨皮、祛痘、换天、去路人与风格可整图处理，也可以涂选局部。去物必须涂选目标；添加内容必须涂选位置并填写描述；参考图追色必须上传样片。
+5. 点击开始处理，检查前后对比；可撤销、重做，再导出 JPEG 或 PNG。
+
+Android 导出通过系统分享面板保存或分享；Windows 导出使用文件保存对话框。关闭应用前请导出需要保留的结果，当前没有项目自动保存或跨设备同步。
+
+## 已实现
+
+- 8 个云端图像编辑工具：质感磨皮、祛痘、涂抹去物、智能换天、去路人、添加内容、一键风格、参考图追色。
+- 5 种天空：晴空白云、金色日落、粉紫暮色、层云光隙、静谧星空。
+- 6 种摄影调色：日系通透、夏日青绿、低饱和胶片、森系柔光、冷调街头、暖调电影，尽量保留摄影细节、人物身份与构图。
+- 2 种艺术重绘：治愈手绘动画、清透水彩。治愈动画以手绘背景、柔软云朵与温暖自然光为方向，允许改变材质和笔触，不承诺复刻某位创作者的成片。
+- 参考图追色将原图与样片一起传给模型，仅迁移色调与影调；一键风格也可上传参考图。色卡仅为氛围示意。
+- OpenAI、Google Gemini、火山方舟／豆包，以及兼容 OpenAI 图像编辑合同的服务。
+- 透明编辑蒙版与黑白选区参考图；结果按原照片尺寸合成，蒙版覆盖为零的区域保持原解码像素。
+- 鼠标／触屏画笔、擦除选区、撤回涂抹、清除选区、前后对比分界、缩放。
+- 最多 5 步编辑撤销／重做、多照片切换、JPEG／PNG 导出。
+- 本地曝光、对比度、饱和度、蓝—琥珀和绿—洋红偏移；本地调色不调用云端模型。
+- 原生 HTTP 传输、请求超时与取消、中文错误提示、密钥脱敏。
+
+## 模型配置
+
+默认值只是方便填写，实际能否调用由服务商账号、地区和模型权限决定，名称和地址均可修改。普通聊天模型和只识图不输出图片的模型无法替代图像编辑模型。
+
+| 服务 | API 基础地址 | 初始模型 |
+| --- | --- | --- |
+| OpenAI | `https://api.openai.com/v1` | `gpt-image-2` |
+| Google Gemini | `https://generativelanguage.googleapis.com/v1` | `gemini-3.1-flash-image` |
+| 火山方舟 | `https://ark.cn-beijing.volces.com/api/v3` | `doubao-seedream-4-0-250828`，也可填对应接入点 ID |
+| 兼容图像编辑接口 | 按服务商文档填写 | 必须支持 `/images/edits` 和图片上传 |
+
+OpenAI 使用原生透明蒙版，有参考图时使用多图上传。Gemini 与方舟依次上传原图、可选的风格参考图、可选的黑白选区图，提示词明确各图角色。最终由本地合成限制选区外的变化；模型未必完全理解复杂的选区指令。兼容接口需要支持相应的多图和蒙版合同。
+
+官方合同来源：
+
+- [OpenAI 图像编辑](https://developers.openai.com/api/reference/resources/images/methods/edit)
+- [Gemini 原生图像生成与编辑](https://ai.google.dev/gemini-api/docs/generate-content/image-generation)
+- [火山方舟图像生成](https://console.volcengine.com/ark/region:cn-beijing/docs/image-generation-api)
+
+## 数据与费用
+
+API Key 只存于当前应用会话内，重启后需重新输入，不写入 localStorage、sessionStorage 或配置文件。模型地址与名称可以保存；照片与编辑记录仅保留于当前会话内。
+
+只有点击「开始」才向所选服务商发送照片、选区、该工具使用的参考图与修图要求；导入、本地调色和导出不发送照片。云端调用按服务商规则计费，本项目不附带额度。取消会阻止软件继续接纳结果，但已提交的任务仍可能计费；软件不自动重试付费请求。
+
+## 当前边界
+
+- AI 使用最长边 2048 像素的输入；返回结果重采样至原图尺寸合成，不代表恢复原图全分辨率细节。精细的人像建议涂选处理。
+- 换天、路人识别和追色使用所选通用图像编辑模型，没有单独训练的本地天空／人物分割器或专用追色模型；无选区整图生成可能改变细节。
+- 不保证达到像素蛋糕等成熟商业软件的磨皮与追色品质。需检查五官、皮肤纹理、保留的人物和背景衔接。
+- 模型返回画幅与原图长宽比偏差超过 3% 时会拒绝合成并保留当前照片，避免拉伸人物或错配选区。
+- 暂不支持 RAW／RW2 解码、16 bit 工作流、专业色彩管理、自动批量修图、人脸分类、工程保存和跨设备同步。
+- 导出以浏览器解码后的像素为基础，不保留原文件 EXIF／ICC 配置。EXIF 拍摄方向在解码时处理。
+- 已做离线接口合同、像素与浏览器交互测试；没有使用真实付费 Key 验证成片效果。Android 构建成功也不等同于在你的手机上验证，需安装后检查系统版本、导入与导出。
+- 桌面 Chrome 已通过 6000×4000、约 10.6 MB JPEG 的离线管线检查。大图合成后的 PNG 可能达到数十 MB，手机建议先一次处理一张；移动端大图内存仍需真机验证。
+
+## 本地开发
+
+需要 Node.js 22.14 或更高版本、pnpm 10、JDK 21。Android 构建还需要 Android SDK，脚本会优先查找已安装环境或专用工具缓存。
+
+```powershell
+pnpm install
+pnpm dev
+```
+
+浏览器开发地址：`http://127.0.0.1:5178`。开发代理只接受本机同源请求；安装版通过原生 HTTP 请求避免浏览器跨域限制。
+
+```powershell
+pnpm build
+pnpm test
+node src/imaging/browser-smoke.mjs http://127.0.0.1:5178
+node tests/integration.mjs
+node tests/creative.mjs
+node tests/desktop.mjs
+node --test electron/http.test.cjs
+pnpm desktop:dev
+pnpm desktop:dist
+pnpm android:apk
+```
+
+Windows 产物在 `release/windows/`。Android 产物位置以构建脚本输出为准。Android 预览版使用调试签名，正式发布前需由发行方配置长期保存的发布签名；当前没有上传应用商店或部署云端服务。
+
+集成测试仅在测试脚本内拦截模型响应，拒绝所有外部请求，不会触发模型消费。它验证真实图片解码、蒙版与像素合成、撤销、导出、手机布局和密钥不落盘；不验证模型实际修图品质。报告与截图在 `artifacts/integration/`，创作工具验收在 `artifacts/creative/`。
+
+## 源码结构
+
+- `src/App.tsx`：修图工作台与会话状态。
+- `src/imaging/`：图像解码、选区、像素合成、调色与导出。
+- `src/ai/`：服务商图像编辑协议与请求测试。
+- `src/platform.ts`：浏览器、Electron、Capacitor 的统一传输／导出接口。
+- `electron/`：Windows 进程隔离、原生 HTTP 和保存对话框。
+- `android/`：Android 工程及原生 HTTP 插件。
+- `native/dev-proxy.ts`：仅本机开发使用的代理。
+- `tests/`：浏览器集成验收。

@@ -1,0 +1,27 @@
+appId: cn.lumaretouch.app
+productName: Luma Retouch
+directories:
+  output: release/windows
+files:
+  - dist/**/*
+  - electron/**/*
+  - package.json
+asar: true
+electronDist: node_modules/electron/dist
+win:
+  icon: build/icon.ico
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: portable
+      arch: [x64]
+  signExecutable: false
+  artifactName: LumaRetouch-${version}-${arch}.${ext}
+nsis:
+  artifactName: LumaRetouch-${version}-${arch}-setup.${ext}
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+portable:
+  artifactName: LumaRetouch-${version}-${arch}-portable.${ext}
