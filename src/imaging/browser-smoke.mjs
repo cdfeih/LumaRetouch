@@ -53,8 +53,39 @@ try {
     })
     const identity = await sample(zero, 1, 1)
     const emptyMask = makeCanvas(4, 2)
-    const full = await imaging.composeEdit(original.element.toDataURL(), edit.element.toDataURL(), emptyMask.element, 1)
-    const emptyMeansFull = await sample(full, 0, 1)
+    const empty = await imaging.composeEdit(original.element.toDataURL(), edit.element.toDataURL(), emptyMask.element, 1)
+    const emptyMeansNoEdit = await sample(empty, 0, 1)
+    const full = await imaging.composeEdit(original.element.toDataURL(), edit.element.toDataURL(), null, 1)
+    const nullMeansFull = await sample(full, 0, 1)
+    const protection = makeCanvas(8, 4)
+    const protectionPixels = protection.context.createImageData(8, 4)
+    const protectionOffset = (1 * 8 + 7) * 4
+    protectionPixels.data.set([255, 255, 255, 1], protectionOffset)
+    protection.context.putImageData(protectionPixels, 0, 0)
+    const locallyProtected = await imaging.composeEdit(original.element.toDataURL(), edit.element.toDataURL(), mask.element, 1, protection.element)
+    const globallyProtected = await imaging.composeEdit(original.element.toDataURL(), edit.element.toDataURL(), null, 1, protection.element)
+    const protectedLocalPixel = await sample(locallyProtected, 7, 1)
+    const protectedGlobalPixel = await sample(globallyProtected, 7, 1)
+    const editableLocalPixel = await sample(locallyProtected, 6, 1)
+    const editableGlobalPixel = await sample(globallyProtected, 0, 1)
+    const protectedPayload = await imaging.createMaskPayload(mask.element, 8, 4, protection.element)
+    const protectedGuide = await sample(`data:image/png;base64,${protectedPayload.maskGuideBase64}`, 7, 1)
+    const onlyProtection = await imaging.createProtectionPayload(protection.element, 8, 4)
+    const onlyProtectionMask = await sample(`data:image/png;base64,${onlyProtection.maskBase64}`, 7, 1)
+    const onlyProtectionEditable = await sample(`data:image/png;base64,${onlyProtection.maskBase64}`, 0, 1)
+    const allProtection = makeCanvas(8, 4, '#fff')
+    const entirelyProtected = await imaging.createMaskPayload(mask.element, 8, 4, allProtection.element)
+    const entirelyProtectedGlobal = await imaging.createProtectionPayload(allProtection.element, 8, 4)
+    const emptyProtected = await imaging.composeEdit(original.element.toDataURL(), edit.element.toDataURL(), emptyMask.element, 1, protection.element)
+    const emptyProtectedUnselected = await sample(emptyProtected, 0, 1)
+    const scaledOriginal = makeCanvas(12, 6, 'rgb(200, 0, 0)')
+    const smallProtection = makeCanvas(4, 2)
+    const smallProtectionPixels = smallProtection.context.createImageData(4, 2)
+    smallProtectionPixels.data.set([255, 255, 255, 1], 2 * 4)
+    smallProtection.context.putImageData(smallProtectionPixels, 0, 0)
+    const scaledProtected = await imaging.composeEdit(scaledOriginal.element.toDataURL(), edit.element.toDataURL(), null, 1, smallProtection.element)
+    const scaledProtectionEdge = await sample(scaledProtected, 6, 2)
+    const scaledUnprotected = await sample(scaledProtected, 0, 5)
     const exported = await imaging.encodeExport(composed, 'png')
 
     // Inject an EXIF orientation=6 tag into a real browser-generated JPEG.
@@ -71,9 +102,17 @@ try {
     return {
       protectedPixel, selectedPixel, maskProtected, maskSelected, guideProtected, guideSelected,
       resized: { width: resized.width, height: resized.height, mimeType: resized.mimeType },
-      identity, emptyMeansFull, exportedMime: exported.mimeType,
+      identity, emptyMeansNoEdit, nullMeansFull, exportedMime: exported.mimeType,
       hasSelection: payload.hasSelection, exif: { width: photo.width, height: photo.height }, rawRejected,
       mismatchedAspectRejected,
+      protectedLocalPixel, protectedGlobalPixel, editableLocalPixel, editableGlobalPixel,
+      protectedGuide, onlyProtectionMask, onlyProtectionEditable,
+      protectedPayloadHasSelection: protectedPayload.hasSelection,
+      onlyProtectionHasSelection: onlyProtection.hasSelection,
+      entirelyProtectedHasSelection: entirelyProtected.hasSelection,
+      entirelyProtectedGlobalHasSelection: entirelyProtectedGlobal.hasSelection,
+      emptyProtectedUnselected,
+      scaledProtectionEdge, scaledUnprotected,
     }
   })
 
@@ -86,12 +125,27 @@ try {
   assert.deepEqual(checks.guideSelected.pixel, [255, 255, 255, 255])
   assert.deepEqual(checks.resized, { width: 4, height: 2, mimeType: 'image/jpeg' })
   assert.deepEqual(checks.identity.pixel, [200, 0, 0, 255])
-  assert.deepEqual(checks.emptyMeansFull.pixel, [0, 0, 200, 255])
+  assert.deepEqual(checks.emptyMeansNoEdit.pixel, [200, 0, 0, 255])
+  assert.deepEqual(checks.nullMeansFull.pixel, [0, 0, 200, 255])
   assert.equal(checks.exportedMime, 'image/png')
   assert.deepEqual(checks.exif, { width: 2, height: 3 })
   assert.equal(checks.rawRejected, true)
   assert.equal(checks.mismatchedAspectRejected, true)
-  console.log('Canvas 浏览器检查通过：蒙版缩放、保护区、强度、PNG编码、调色identity、EXIF方向、RAW拒绝与模型画幅校验。')
+  assert.deepEqual(checks.protectedLocalPixel.pixel, [200, 0, 0, 255])
+  assert.deepEqual(checks.protectedGlobalPixel.pixel, [200, 0, 0, 255])
+  assert.deepEqual(checks.editableLocalPixel.pixel, [0, 0, 200, 255])
+  assert.deepEqual(checks.editableGlobalPixel.pixel, [0, 0, 200, 255])
+  assert.deepEqual(checks.protectedGuide.pixel, [0, 0, 0, 255])
+  assert.equal(checks.onlyProtectionMask.pixel[3], 255)
+  assert.equal(checks.onlyProtectionEditable.pixel[3], 0)
+  assert.equal(checks.protectedPayloadHasSelection, true)
+  assert.equal(checks.onlyProtectionHasSelection, true)
+  assert.equal(checks.entirelyProtectedHasSelection, false)
+  assert.equal(checks.entirelyProtectedGlobalHasSelection, false)
+  assert.deepEqual(checks.emptyProtectedUnselected.pixel, [200, 0, 0, 255])
+  assert.deepEqual(checks.scaledProtectionEdge.pixel, [200, 0, 0, 255])
+  assert.deepEqual(checks.scaledUnprotected.pixel, [0, 0, 200, 255])
+  console.log('Canvas 浏览器检查通过：蒙版缩放、独立保护alpha=1硬优先、全图减保护payload、空编辑不落全图、强度、PNG编码、调色identity、EXIF方向、RAW拒绝与模型画幅校验。')
 } finally {
   await browser.close()
 }

@@ -2,7 +2,6 @@ import {
   adjustPixelBuffer,
   clamp,
   compositePixelBuffers,
-  hasMaskSelection,
   maskPixelBuffers,
 } from './pixels'
 import type { Adjustments } from './pixels'
@@ -175,13 +174,30 @@ export async function resizeForModel(dataUrl: string, maxEdge = DEFAULT_MODEL_ED
   }
 }
 
-export async function createMaskPayload(maskCanvas: HTMLCanvasElement, width: number, height: number): Promise<{
+export interface MaskPayload {
   maskBase64: string; maskGuideBase64: string; hasSelection: boolean
-}> {
+}
+
+/** Any nonzero protection alpha overrides the editable selection. */
+export async function createMaskPayload(
+  maskCanvas: HTMLCanvasElement,
+  width: number,
+  height: number,
+  protectionCanvas: HTMLCanvasElement | null = null,
+): Promise<MaskPayload> {
   const selection = canvas(width, height)
   selection.context.drawImage(maskCanvas, 0, 0, width, height)
   const pixels = selection.context.getImageData(0, 0, width, height)
-  const result = maskPixelBuffers(pixels.data)
+  let protectionPixels: Uint8ClampedArray | null = null
+  if (protectionCanvas) {
+    const protection = canvas(width, height)
+    // A protection pixel is a hard veto, not a feather. Nearest-neighbor scaling
+    // keeps even alpha=1 source pixels from rounding down to zero on resampling.
+    protection.context.imageSmoothingEnabled = false
+    protection.context.drawImage(protectionCanvas, 0, 0, width, height)
+    protectionPixels = protection.context.getImageData(0, 0, width, height).data
+  }
+  const result = maskPixelBuffers(pixels.data, protectionPixels)
   pixels.data.set(result.mask)
   selection.context.putImageData(pixels, 0, 0)
   const maskBase64 = dataUrlBase64(toDataUrl(selection.canvas))
@@ -190,12 +206,28 @@ export async function createMaskPayload(maskCanvas: HTMLCanvasElement, width: nu
   return { maskBase64, maskGuideBase64: dataUrlBase64(toDataUrl(selection.canvas)), hasSelection: result.hasSelection }
 }
 
-/** Keep temporary pixel buffers in strips instead of copying full 40 MP images. */
+/** Full-image editing with the protected region removed from the model's mask. */
+export async function createProtectionPayload(
+  protectionCanvas: HTMLCanvasElement | null,
+  width: number,
+  height: number,
+): Promise<MaskPayload> {
+  const editable = canvas(width, height)
+  editable.context.fillStyle = '#ffffff'
+  editable.context.fillRect(0, 0, width, height)
+  return createMaskPayload(editable.canvas, width, height, protectionCanvas)
+}
+
+/**
+ * Keep temporary pixel buffers in strips. Null edit mask permits full-image edits;
+ * a supplied but empty mask permits none. Protection always takes precedence.
+ */
 export async function composeEdit(
   originalDataUrl: string,
   editedDataUrl: string,
   maskCanvas: HTMLCanvasElement | null,
   blend: number,
+  protectionCanvas: HTMLCanvasElement | null = null,
 ): Promise<string> {
   const original = await decode(originalDataUrl)
   let target: ReturnType<typeof canvas>
@@ -219,10 +251,8 @@ export async function composeEdit(
     const stripHeight = Math.min(256, height)
     const editStrip = canvas(width, stripHeight)
     const maskStrip = maskCanvas ? canvas(width, stripHeight) : null
-    const maskContext = maskCanvas?.getContext('2d')
-    const selected = maskCanvas && maskContext
-      ? hasMaskSelection(maskContext.getImageData(0, 0, maskCanvas.width, maskCanvas.height).data)
-      : false
+    const protectionStrip = protectionCanvas ? canvas(width, stripHeight) : null
+    if (protectionStrip) protectionStrip.context.imageSmoothingEnabled = false
     for (let y = 0; y < height; y += stripHeight) {
       const rows = Math.min(stripHeight, height - y)
       editStrip.context.clearRect(0, 0, width, stripHeight)
@@ -230,12 +260,18 @@ export async function composeEdit(
       const originalPixels = target.context.getImageData(0, y, width, rows)
       const editPixels = editStrip.context.getImageData(0, 0, width, rows)
       let maskPixels: Uint8ClampedArray | null = null
-      if (selected && maskCanvas && maskStrip) {
+      if (maskCanvas && maskStrip) {
         maskStrip.context.clearRect(0, 0, width, stripHeight)
         maskStrip.context.drawImage(maskCanvas, 0, -y, width, height)
         maskPixels = maskStrip.context.getImageData(0, 0, width, rows).data
       }
-      compositePixelBuffers(originalPixels.data, editPixels.data, maskPixels, blend, originalPixels.data)
+      let protectionPixels: Uint8ClampedArray | null = null
+      if (protectionCanvas && protectionStrip) {
+        protectionStrip.context.clearRect(0, 0, width, stripHeight)
+        protectionStrip.context.drawImage(protectionCanvas, 0, -y, width, height)
+        protectionPixels = protectionStrip.context.getImageData(0, 0, width, rows).data
+      }
+      compositePixelBuffers(originalPixels.data, editPixels.data, maskPixels, blend, originalPixels.data, protectionPixels)
       target.context.putImageData(originalPixels, 0, y)
     }
     return toDataUrl(target.canvas)

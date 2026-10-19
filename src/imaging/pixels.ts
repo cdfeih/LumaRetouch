@@ -46,14 +46,19 @@ export function compositePixelBuffers(
   mask: Uint8ClampedArray | null,
   blend: number,
   output = new Uint8ClampedArray(original.length),
+  protection: Uint8ClampedArray | null = null,
 ): Uint8ClampedArray {
   checkBuffers(original, edited)
   checkBuffers(original, output)
   if (mask) checkBuffers(original, mask)
+  if (protection) checkBuffers(original, protection)
   const strength = clamp(blend, 0, 1)
 
   for (let i = 0; i < original.length; i += 4) {
-    const coverage = strength * (mask ? mask[i + 3] / 255 : 1)
+    // Protection is deliberately binary, including anti-aliased alpha=1 edges:
+    // any protected pixel keeps its original decoded RGBA exactly.
+    const coverage = protection && protection[i + 3] > 0
+      ? 0 : strength * (mask ? mask[i + 3] / 255 : 1)
     const sourceAlpha = (edited[i + 3] / 255) * coverage
     if (sourceAlpha === 0) {
       output[i] = original[i]
@@ -77,17 +82,18 @@ export function compositePixelBuffers(
 }
 
 /** Convert the paint mask into transparent-editable OpenAI and white-editable guide masks. */
-export function maskPixelBuffers(selection: Uint8ClampedArray): {
+export function maskPixelBuffers(selection: Uint8ClampedArray, protection: Uint8ClampedArray | null = null): {
   mask: Uint8ClampedArray
   guide: Uint8ClampedArray
   hasSelection: boolean
 } {
   if (selection.length % 4 !== 0) throw new Error('蒙版像素格式不正确。')
+  if (protection) checkBuffers(selection, protection)
   const mask = new Uint8ClampedArray(selection.length)
   const guide = new Uint8ClampedArray(selection.length)
   let hasSelection = false
   for (let i = 0; i < selection.length; i += 4) {
-    const coverage = selection[i + 3]
+    const coverage = protection && protection[i + 3] > 0 ? 0 : selection[i + 3]
     hasSelection ||= coverage > 0
     mask[i] = mask[i + 1] = mask[i + 2] = 255
     mask[i + 3] = 255 - coverage

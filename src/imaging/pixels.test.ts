@@ -53,6 +53,46 @@ describe('masked editing', () => {
     expect(hasMaskSelection(new Uint8ClampedArray(8))).toBe(false)
     expect(maskPixelBuffers(new Uint8ClampedArray(8)).hasSelection).toBe(false)
   })
+
+  it('protects exact original RGBA in both full-image and selected editing', () => {
+    const original = new Uint8ClampedArray([23, 45, 67, 155, 90, 80, 70, 255])
+    const edited = new Uint8ClampedArray([250, 240, 230, 255, 9, 8, 7, 255])
+    const editMask = new Uint8ClampedArray([255, 255, 255, 255, 255, 255, 255, 255])
+    const protection = new Uint8ClampedArray([255, 255, 255, 255, 0, 0, 0, 0])
+    const expected = [23, 45, 67, 155, 9, 8, 7, 255]
+    expect([...compositePixelBuffers(original, edited, null, 1, undefined, protection)]).toEqual(expected)
+    expect([...compositePixelBuffers(original, edited, editMask, 1, undefined, protection)]).toEqual(expected)
+    expect([...compositePixelBuffers(original, edited, editMask, 1, original, protection)]).toEqual(expected)
+  })
+
+  it('hard-protects anti-aliased alpha=1 edges while ordinary edit alpha still blends', () => {
+    const original = new Uint8ClampedArray([12, 23, 34, 0, 0, 20, 40, 255, 7, 17, 27, 128])
+    const edited = new Uint8ClampedArray([250, 240, 230, 255, 200, 220, 240, 255, 100, 100, 100, 255])
+    const editMask = new Uint8ClampedArray([255, 255, 255, 255, 255, 255, 255, 128, 255, 255, 255, 255])
+    const protection = new Uint8ClampedArray([255, 255, 255, 1, 0, 0, 0, 0, 255, 255, 255, 128])
+    expect([...compositePixelBuffers(original, edited, editMask, 1, undefined, protection)])
+      .toEqual([12, 23, 34, 0, 100, 120, 140, 255, 7, 17, 27, 128])
+  })
+
+  it('subtracts hard protection from upload masks and detects fully protected selections', () => {
+    const selected = new Uint8ClampedArray([255, 255, 255, 255, 255, 255, 255, 128])
+    const partial = new Uint8ClampedArray([255, 255, 255, 1, 0, 0, 0, 0])
+    const result = maskPixelBuffers(selected, partial)
+    expect([...result.mask]).toEqual([255, 255, 255, 255, 255, 255, 255, 127])
+    expect([...result.guide]).toEqual([0, 0, 0, 255, 128, 128, 128, 255])
+    expect(result.hasSelection).toBe(true)
+    const allProtected = new Uint8ClampedArray([0, 0, 0, 255, 0, 0, 0, 1])
+    expect(maskPixelBuffers(selected, allProtected).hasSelection).toBe(false)
+  })
+
+  it('never promotes an empty editable mask to whole-image editing', () => {
+    const original = new Uint8ClampedArray([10, 20, 30, 255, 40, 50, 60, 90])
+    const edited = new Uint8ClampedArray([200, 100, 50, 255, 90, 80, 70, 255])
+    const empty = new Uint8ClampedArray(original.length)
+    const protection = new Uint8ClampedArray([0, 0, 0, 1, 0, 0, 0, 0])
+    expect(compositePixelBuffers(original, edited, empty, 1, undefined, protection)).toEqual(original)
+    expect(maskPixelBuffers(empty, protection).hasSelection).toBe(false)
+  })
 })
 
 describe('local finishing controls', () => {
