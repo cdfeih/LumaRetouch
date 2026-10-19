@@ -10,6 +10,32 @@ const response = (body: unknown, status = 200): HttpResponse => ({ status, body:
 const imageResponse = () => response({ data: [{ b64_json: PNG }] });
 
 describe('真实图像接口合同', () => {
+  it.each([
+    'https://ark.cn-beijing.volces.com/api/v3',
+    'https://ark.cn-beijing.volces.com/api/v3/',
+    'https://ark.cn-beijing.volces.com/api/v3/images/generations',
+    'https://ark.cn-beijing.volces.com/api/v3/images/generations/',
+  ])('Seedream 5.0 Flash 将基础地址或完整端点 %s 归一为一次调用', async baseUrl => {
+    const transport = vi.fn<HttpTransport>().mockResolvedValue(imageResponse());
+    const edit = input('ark');
+    edit.provider = { ...edit.provider, baseUrl, model: 'doubao-seedream-5-0-flash-260915' };
+    await editImage(edit, transport);
+    expect(transport).toHaveBeenCalledOnce();
+    const http = transport.mock.calls[0][0];
+    expect(http.url).toBe('https://ark.cn-beijing.volces.com/api/v3/images/generations');
+    expect(JSON.parse(http.body!)).toMatchObject({ model: 'doubao-seedream-5-0-flash-260915', response_format: 'b64_json', size: '2K', image: `data:image/png;base64,${PNG}` });
+  });
+
+  it('方舟自定义部署前缀和无效查询参数不会被归一化误改', async () => {
+    const transport = vi.fn<HttpTransport>().mockResolvedValue(imageResponse());
+    const edit = input('ark');
+    edit.provider.baseUrl = 'https://ark.example.test/custom/api/v3/images/generations';
+    await editImage(edit, transport);
+    expect(transport.mock.calls[0][0].url).toBe('https://ark.example.test/custom/api/v3/images/generations');
+    edit.provider.baseUrl += '?key=not-a-real-key';
+    await expect(editImage(edit, transport)).rejects.toMatchObject({ code: 'CONFIG' });
+    expect(transport).toHaveBeenCalledOnce();
+  });
   it('OpenAI 上传原图和透明选区，不传聊天字段或 GPT Image 不支持的 response_format', async () => {
     const transport = vi.fn<HttpTransport>().mockResolvedValue(imageResponse());
     await expect(editImage({ ...input(), maskBase64: PNG }, transport)).resolves.toEqual({ imageBase64: PNG, mimeType: 'image/png' });
@@ -78,6 +104,11 @@ describe('真实图像接口合同', () => {
 });
 
 describe('失败及取消', () => {
+  it('服务端内部错误保留 HTTP 状态和请求编号，不自动重试计费请求', async () => {
+    const transport = vi.fn<HttpTransport>().mockResolvedValue(response({ error: { code: 'InternalServiceError', message: 'The service encountered an unexpected internal error. Request id: qa-request-500' } }, 500));
+    await expect(editImage(input('ark'), transport)).rejects.toMatchObject({ code: 'HTTP', status: 500, message: expect.stringContaining('HTTP 500') });
+    expect(transport).toHaveBeenCalledOnce();
+  });
   it('HTTP 错误包含可操作信息并清除响应回显的 Key 与链接', async () => {
     const transport = vi.fn<HttpTransport>().mockResolvedValue(response({ error: { message: 'Bad secret-client-key at https://host.test/?key=secret-client-key' } }, 401));
     try {

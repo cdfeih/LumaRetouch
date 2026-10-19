@@ -237,6 +237,9 @@ textarea::placeholder { color: #5d7849; }
 .text-field { display: block; margin: 17px 0; }
 .text-field > span { display: flex; justify-content: space-between; gap: 10px; color: #b9cfa6; font-size: 11px; margin-bottom: 9px; }
 .field-meta { font-size: 9px; color: #7d9968; }
+.api-address-help { display: block; font-size: 10px; line-height: 1.8; color: #91ad7b; margin-top: 8px; }
+.result-review { grid-column: 1 / -1; }
+.result-review .property-title { margin-bottom: 12px; }
 .text-field input { width: 100%; color: #d4e5c5; border: 1px solid #3b522e; border-radius: 6px; background: #111d0b; height: 40px; padding: 0 11px; font-family: "Segoe UI", "Microsoft YaHei", sans-serif; font-size: 12px; }
 .text-field input::placeholder { color: #516d3f; font-size: 10px; }
 .secret-input { position: relative; }

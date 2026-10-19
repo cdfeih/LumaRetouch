@@ -91,7 +91,7 @@ function parseResponse(response: HttpResponse, apiKey: string): JsonObject {
       429: '额度不足或请求频率过高，请检查模型账号后稍后重试。',
     };
     const detail = text(failure?.message);
-    const fallback = reasons[status] ?? (status >= 500 ? '图像服务暂时不可用，请稍后重试。' : '图像服务拒绝了请求。');
+    const fallback = reasons[status] ?? (status >= 500 ? `图像服务内部错误（HTTP ${status}），请稍后手动重试；持续出现时可向服务商提供请求编号。` : '图像服务拒绝了请求。');
     const code = text(failure?.code) ?? '';
     const filtered = /content_policy|safety|moderation|content_filter/i.test(code);
     throw new RetouchError(filtered ? 'CONTENT_FILTER' : 'HTTP', `${fallback}${detail ? ` 服务提示：${safeMessage(detail, apiKey)}` : ''}`, status);
@@ -137,7 +137,10 @@ function validate(input: EditImageInput): { baseUrl: string; model: string; imag
   throwIfAborted(input.signal);
   const { provider } = input;
   if (!provider.apiKey.trim()) throw new RetouchError('CONFIG', '请先填写所选图像服务的 API Key。');
-  const baseUrl = checkedUrl(provider.baseUrl.trim(), 'service').toString().replace(/\/+$/, '');
+  const serviceUrl = checkedUrl(provider.baseUrl.trim(), 'service');
+  // 方舟控制台示例常提供完整端点；与基础地址等价处理，避免重复追加路径。
+  if (provider.kind === 'ark') serviceUrl.pathname = serviceUrl.pathname.replace(/(?:\/images\/generations)+\/?$/, '');
+  const baseUrl = serviceUrl.toString().replace(/\/+$/, '');
   const model = provider.model.trim().replace(/^models\//, '');
   if (!model || !/^[\w.-]+$/.test(model)) throw new RetouchError('CONFIG', '请填写有效的图像编辑模型名称或推理端点 ID。');
   if (provider.kind === 'openai' && !/^(gpt-image-|chatgpt-image-latest$)/.test(model)) {

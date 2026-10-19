@@ -33,6 +33,7 @@ Android 导出通过系统分享面板保存或分享；Windows 导出使用文�
 - 6 种摄影调色：日系通透、夏日青绿、低饱和胶片、森系柔光、冷调街头、暖调电影，尽量保留摄影细节、人物身份与构图。
 - 2 种艺术重绘：治愈手绘动画、清透水彩。治愈动画以手绘背景、柔软云朵与温暖自然光为方向，允许改变材质和笔触，不承诺复刻某位创作者的成片。
 - 参考图追色将原图与样片一起传给模型，仅迁移色调与影调；一键风格也可上传参考图。色卡仅为氛围示意。
+- 局部添加后可在「选区合成」和「模型完整画面」之间切换，检查物体是否超出选区而被裁断。切换使用同一次返回结果，不再次调用模型；完整画面的背景可能变化，可切回或撤销。此功能只保留更新后新生成的结果。
 - OpenAI、Google Gemini、火山方舟／豆包，以及兼容 OpenAI 图像编辑合同的服务。
 - 透明编辑蒙版与黑白选区参考图；结果按原照片尺寸合成，蒙版覆盖为零的区域保持原解码像素。
 - 鼠标／触屏画笔、擦除选区、撤回涂抹、清除选区、前后对比分界、缩放。
@@ -52,6 +53,8 @@ Android 导出通过系统分享面板保存或分享；Windows 导出使用文�
 | 兼容图像编辑接口 | 按服务商文档填写 | 必须支持 `/images/edits` 和图片上传 |
 
 OpenAI 使用原生透明蒙版，有参考图时使用多图上传。Gemini 与方舟依次上传原图、可选的风格参考图、可选的黑白选区图，提示词明确各图角色。最终由本地合成限制选区外的变化；模型未必完全理解复杂的选区指令。兼容接口需要支持相应的多图和蒙版合同。
+
+方舟 API 地址建议填写 `https://ark.cn-beijing.volces.com/api/v3`。也兼容粘贴完整的 `/images/generations` 地址，软件会避免重复追加路径。Seedream 5.0 Flash 可使用官方型号 `doubao-seedream-5-0-flash-260915`，仍须由账号开通权限。HTTP 500 表示服务端内部异常，软件会保留当前照片且不自动重试；持续出现时，可凭服务提示中的 Request ID 向火山方舟排查。见[官方图片教程](https://console.volcengine.com/ark/region:cn-beijing/docs/seedream-5-0-pro)及[错误码](https://console.volcengine.com/ark/region:cn-beijing/docs/error-codes)。
 
 官方合同来源：
 
@@ -93,6 +96,7 @@ pnpm test
 node src/imaging/browser-smoke.mjs http://127.0.0.1:5178
 node tests/integration.mjs
 node tests/creative.mjs
+node tests/ark-config.mjs
 node tests/desktop.mjs
 node --test electron/http.test.cjs
 pnpm desktop:dev
