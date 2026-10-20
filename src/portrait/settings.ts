@@ -3,6 +3,7 @@ import type { NaturalRetouchSettings } from './retouch';
 
 export type PortraitSection = 'natural' | 'skin' | 'face' | 'body' | 'details';
 export type PortraitSettings = NaturalRetouchSettings & {
+  dodgeBurn: number;
   warmth: number; deYellow: number; deRedness: number; rosiness: number;
   darkCircles: number; teethWhitening: number; eyeWhitening: number; lipColor: number;
   faceSlim: number; jawSlim: number; chinLength: number;
@@ -15,6 +16,7 @@ export const PORTRAIT_SECTIONS: Array<{ id: PortraitSection; label: string }> = 
 ];
 export const PORTRAIT_FIELDS: PortraitField[] = [
   { key: 'smoothing', label: '轻磨皮', section: 'natural', min: 0, max: 100 },
+  { key: 'dodgeBurn', label: '中性灰光影', section: 'natural', min: 0, max: 100 },
   { key: 'blemish', label: '祛痘修饰', section: 'natural', min: 0, max: 100 },
   { key: 'evenness', label: '肤色均匀', section: 'natural', min: 0, max: 100 },
   { key: 'brightening', label: '肤色提亮', section: 'natural', min: 0, max: 100 },

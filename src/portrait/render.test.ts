@@ -1,7 +1,31 @@
 import { describe, expect, it } from 'vitest'
-import { includePortraitDetailPixels, mergeNaturalRetouchStrip } from './render'
+import { includePortraitDetailPixels, mergeNaturalRetouchStrip, scaleProtectionAlpha } from './render'
 
 describe('original-resolution natural finishing merge', () => {
+  it('conservatively scales alpha=1 protection, including thin lines between worker samples', () => {
+    expect([...scaleProtectionAlpha(new Uint8ClampedArray([0, 1, 0, 0, 0]), 5, 1, 2, 1)]).toEqual([255, 0])
+    expect([...scaleProtectionAlpha(new Uint8ClampedArray([0, 0, 1, 0, 0]), 5, 1, 2, 1)]).toEqual([255, 255])
+    expect([...scaleProtectionAlpha(new Uint8ClampedArray([1, 0]), 2, 1, 4, 2)]).toEqual([255, 255, 0, 0, 255, 255, 0, 0])
+    expect(() => scaleProtectionAlpha(new Uint8ClampedArray(2), 5, 1, 2, 1)).toThrow('尺寸不一致')
+  })
+
+  it('limits one achromatic delta against full-resolution RGB without new clipping or chroma drift', () => {
+    const baseline = new Uint8ClampedArray([253, 101, 80, 255, 2, 180, 250, 255, 0, 90, 255, 128])
+    const current = new Uint8ClampedArray(baseline)
+    mergeNaturalRetouchStrip(baseline, current, new Uint8ClampedArray(3).fill(255),
+      new Int16Array([10, 10, 10, -10, -10, -10, 10, 10, 10]),
+      { width: 3, height: 1, workWidth: 3, workHeight: 1, startY: 0, achromatic: true })
+    expect([...current]).toEqual([254, 102, 81, 255, 1, 179, 249, 255, 0, 90, 255, 128])
+  })
+
+  it('keeps one person’s D&B headroom independent of another person’s color settings', () => {
+    const baseline = new Uint8ClampedArray([253, 101, 80, 255, 100, 100, 100, 255])
+    const current = new Uint8ClampedArray(baseline)
+    mergeNaturalRetouchStrip(baseline, current, new Uint8ClampedArray([255, 255]),
+      new Int16Array([10, 10, 10, 12, 4, -7]), { width: 2, height: 1, workWidth: 2, workHeight: 1, startY: 0 },
+      null, null, null, new Uint8ClampedArray([255, 0]))
+    expect([...current]).toEqual([254, 102, 81, 255, 112, 104, 93, 255])
+  })
   it('keeps current outside target skin, inside feature holes, at green=0, and at protection=1', () => {
     const baseline = new Uint8ClampedArray(20).fill(50)
     const current = new Uint8ClampedArray([

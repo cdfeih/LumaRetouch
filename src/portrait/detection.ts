@@ -205,10 +205,35 @@ export function createFaceSkinMask(face: PortraitFace, width: number, height: nu
 }
 
 
+/** Conservative nose contour, including bridge, tip and nostril landmarks. */
+const DODGE_BURN_NOSE = [1,2,4,5,6,19,94,97,98,168,195,197,326,327];
+
+export function createFaceDodgeBurnMask(face: PortraitFace, width: number, height: number): Uint8ClampedArray {
+  const mask = createFaceSkinMask(face, width, height);
+  // A convex hull handles left/right profile and head rotation without relying
+  // on a particular clockwise ordering of mesh nose points.
+  const points = polygon(face.landmarks, DODGE_BURN_NOSE, width, height, 1.2)
+    .sort((a, b) => a.x - b.x || a.y - b.y);
+  const cross = (a: PortraitPoint, b: PortraitPoint, c: PortraitPoint) => (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+  const chain = (values: PortraitPoint[]) => {
+    const result: PortraitPoint[] = [];
+    for (const point of values) {
+      while (result.length > 1 && cross(result[result.length - 2], result[result.length - 1], point) <= 0) result.pop();
+      result.push(point);
+    }
+    return result;
+  };
+  const lower = chain(points), upper = chain([...points].reverse());
+  const hull = [...lower.slice(0, -1), ...upper.slice(0, -1)];
+  if (hull.length >= 3) fillPolygon(mask, width, height, hull, 0);
+  featherDetail(mask, width, height, clamp(face.bounds.width * width * 0.02, 1.5, 12), true);
+  return mask;
+}
+
 const INNER_LIPS = [78,95,88,178,87,14,317,402,318,324,308,415,310,311,312,13,82,81,80,191];
 
 /** Inward feathering never adds pixels outside the geometric feature. */
-function featherDetail(mask: Uint8ClampedArray, width: number, height: number, radius: number): void {
+function featherDetail(mask: Uint8ClampedArray, width: number, height: number, radius: number, onlyReduce = false): void {
   let left = width, top = height, right = -1, bottom = -1;
   for (let i = 0; i < mask.length; i++) if (mask[i]) {
     const x = i % width, y = Math.floor(i / width);
@@ -229,7 +254,9 @@ function featherDetail(mask: Uint8ClampedArray, width: number, height: number, r
     const i = y * rw + x;
     if (!distances[i]) continue;
     distances[i] = Math.min(distances[i], x + 1 < rw ? distances[i + 1] + 1 : 1, y + 1 < rh ? distances[i + rw] + 1 : 1);
-    mask[(y + top) * width + x + left] = Math.round(255 * distances[i] / radius);
+    const pixel = (y + top) * width + x + left;
+    const alpha = Math.round(255 * distances[i] / radius);
+    mask[pixel] = onlyReduce ? Math.min(mask[pixel], alpha) : alpha;
   }
 }
 

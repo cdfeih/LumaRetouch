@@ -58,9 +58,9 @@ try {
   const empty = { name: 'no-face.png', mimeType: 'image/png', buffer: Buffer.from(blank, 'base64') };
   let firstResult;
 
-  await check('四步入口、三套默认零塑形推荐，先试1张仅生成一个本地结果', async () => {
+  await check('四步入口、四套默认零塑形推荐，先试1张仅生成一个本地结果', async () => {
     assert.equal(await dialog.locator('.batch-steps li').count(), 4);
-    assert.equal(await dialog.getByTestId('batch-preset').locator('optgroup').first().locator('option').count(), 3);
+    assert.equal(await dialog.getByTestId('batch-preset').locator('optgroup').first().locator('option').count(), 4);
     await dialog.getByTestId('batch-file-input').setInputFiles([portrait, { name: 'broken.png', mimeType: 'image/png', buffer: Buffer.from('invalid-local-png') }, empty]);
     assert.equal(await rows().count(), 3);
     await dialog.getByTestId('batch-trial').click(); await idle();

@@ -148,10 +148,47 @@ function detailMasks(length: number): PortraitDetailMasks {
   return { underEyes: new Uint8ClampedArray(length), teeth: new Uint8ClampedArray(length), eyes: new Uint8ClampedArray(length), lips: new Uint8ClampedArray(length) }
 }
 
+describe('Dodge & Burn integration without RGB blur', () => {
+  function patch() {
+    const source = photo(160, 160)
+    for (let y = 0; y < 160; y++) for (let x = 0; x < 160; x++) {
+      const change = Math.round(-18 * Math.exp(-((x - 80) ** 2 + (y - 80) ** 2) / 32))
+      source.set([180 + change, 140 + change, 120 + change, 255], (y * 160 + x) * 4)
+    }
+    return source
+  }
+  it('is opt-in, corrects a dark patch achromatically and reuses immutable source', () => {
+    const source = patch(), before = new Uint8ClampedArray(source), mask = new Uint8ClampedArray(160 * 160).fill(255)
+    expect(retouchPortraitPixels(source, 160, 160, [{ mask, settings: { ...ZERO, dodgeBurn: 0 } }])).toEqual(source)
+    const output = retouchPortraitPixels(source, 160, 160, [{ mask, settings: { ...ZERO, dodgeBurn: 100 } }])
+    expect(output[(80 * 160 + 80) * 4]).toBeGreaterThan(source[(80 * 160 + 80) * 4])
+    for (let p = 0; p < mask.length; p++) {
+      const i = p * 4, delta = output[i] - source[i]
+      expect(output[i + 1] - source[i + 1]).toBe(delta)
+      expect(output[i + 2] - source[i + 2]).toBe(delta)
+      expect(output[i + 3]).toBe(source[i + 3])
+    }
+    expect(source).toEqual(before)
+    expect(retouchPortraitPixels(source, 160, 160, [{ mask, settings: { ...ZERO, dodgeBurn: 100 } }])).toEqual(output)
+  })
+  it('applies new skin feather once and preserves nose exclusions and protection alpha=1', () => {
+    const source = patch(), mask = new Uint8ClampedArray(160 * 160).fill(255)
+    const full = retouchPortraitPixels(source, 160, 160, [{ mask, settings: { ...ZERO, dodgeBurn: 100 } }])
+    const half = retouchPortraitPixels(source, 160, 160, [{ mask, dodgeBurnMask: new Uint8ClampedArray(mask.length).fill(128), settings: { ...ZERO, dodgeBurn: 100 } }])
+    const center = (80 * 160 + 80) * 4
+    expect(Math.abs(half[center] - source[center] - (full[center] - source[center]) * 128 / 255)).toBeLessThanOrEqual(1)
+    const excluded = new Uint8ClampedArray(mask), protection = new Uint8ClampedArray(mask.length)
+    excluded[80 * 160 + 80] = 0; protection[80 * 160 + 100] = 1
+    const result = retouchPortraitPixels(source, 160, 160, [{ mask, dodgeBurnMask: excluded, settings: { ...ZERO, dodgeBurn: 100 } }], protection)
+    for (const p of [80 * 160 + 80, 80 * 160 + 100]) expect(result.slice(p * 4, p * 4 + 4)).toEqual(source.slice(p * 4, p * 4 + 4))
+    expect(() => retouchPortraitPixels(source, 160, 160, [{ mask, dodgeBurnMask: new Uint8ClampedArray(1), settings: ZERO }])).toThrow('中性灰皮肤选区尺寸')
+  })
+})
+
 describe('local portrait complexion and feature finishing', () => {
   it('keeps all added controls opt-in and preserves the natural preset strengths', () => {
     expect([DEFAULT_NATURAL_SETTINGS.smoothing, DEFAULT_NATURAL_SETTINGS.blemish, DEFAULT_NATURAL_SETTINGS.evenness, DEFAULT_NATURAL_SETTINGS.brightening, DEFAULT_NATURAL_SETTINGS.shine]).toEqual([28, 24, 20, 16, 12])
-    for (const key of ['warmth', 'deYellow', 'deRedness', 'rosiness', 'darkCircles', 'teethWhitening', 'eyeWhitening', 'lipColor'] as const) expect(DEFAULT_NATURAL_SETTINGS[key]).toBe(0)
+    for (const key of ['dodgeBurn', 'warmth', 'deYellow', 'deRedness', 'rosiness', 'darkCircles', 'teethWhitening', 'eyeWhitening', 'lipColor'] as const) expect(DEFAULT_NATURAL_SETTINGS[key]).toBe(0)
     const source = photo(2, 1), details = detailMasks(2)
     for (const mask of Object.values(details)) mask.fill(255)
     expect(retouchPortraitPixels(source, 2, 1, [{ mask: new Uint8ClampedArray(2), details, settings: { ...ZERO, warmth: 0, deYellow: 0, deRedness: 0, rosiness: 0, darkCircles: 0, teethWhitening: 0, eyeWhitening: 0, lipColor: 0 } }])).toEqual(source)

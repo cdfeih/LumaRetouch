@@ -43,10 +43,20 @@ describe('个人精修预设', () => {
   it('兼容五参数旧预设，新增塑形默认零且可保存负向肩宽和下巴参数', () => {
     const storage = memoryStorage();
     storage.setItem(PRESET_STORAGE_KEY, JSON.stringify([{ id: 'old', name: '旧自然', settings }]));
-    expect(loadPortraitPresets(storage)[0].settings).toMatchObject({ faceSlim: 0, armSlim: 0, darkCircles: 0, warmth: 0 });
+    expect(loadPortraitPresets(storage)[0].settings).toMatchObject({ faceSlim: 0, armSlim: 0, darkCircles: 0, warmth: 0, dodgeBurn: 0 });
     const next = normalizePortraitSettings({ ...settings, chinLength: -25, shoulderWidth: -20, armSlim: 30 });
     savePortraitPreset('塑形', next, storage);
     expect(loadPortraitPresets(storage)[1].settings).toMatchObject({ chinLength: -25, shoulderWidth: -20, armSlim: 30 });
     expect(() => savePortraitPreset('越界', { ...next, armSlim: 101 }, storage)).toThrow('参数无效');
+  });
+  it('兼容缺中性灰字段的20项预设，新字段可保存且拒绝越界', () => {
+    const storage = memoryStorage();
+    const old = { ...normalizePortraitSettings(settings) };
+    delete (old as Partial<typeof old>).dodgeBurn;
+    storage.setItem(PRESET_STORAGE_KEY, JSON.stringify([{ id: 'old-20', name: '旧20项', settings: old }]));
+    expect(loadPortraitPresets(storage)[0].settings.dodgeBurn).toBe(0);
+    savePortraitPreset('光影', { ...old, dodgeBurn: 58 }, storage);
+    expect(loadPortraitPresets(storage)[1].settings.dodgeBurn).toBe(58);
+    expect(() => savePortraitPreset('越界光影', { ...old, dodgeBurn: 101 }, storage)).toThrow('参数无效');
   });
 });

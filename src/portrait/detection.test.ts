@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createFaceDetailMasks, createFaceSkinMask, type PortraitFace } from './detection';
+import { createFaceDetailMasks, createFaceDodgeBurnMask, createFaceSkinMask, type PortraitFace } from './detection';
 
 const OVAL = [10,338,297,332,284,251,389,356,454,323,361,288,397,365,379,378,400,377,152,148,176,149,150,136,172,58,132,93,234,127,162,21,54,103,67,109];
 const EYE_LEFT = [33,7,163,144,145,153,154,155,133,173,157,158,159,160,161,246];
@@ -26,6 +26,19 @@ function fixture(): PortraitFace {
 }
 
 describe('face skin mask', () => {
+  it('adds a nose exclusion only for dodge and burn, without widening the old skin mask', () => {
+    const face = fixture();
+    const indices = [1,2,4,5,6,19,94,97,98,168,195,197,326,327];
+    indices.forEach((index, order) => {
+      const angle = order / indices.length * Math.PI * 2;
+      face.landmarks[index] = { x: 0.5 + Math.cos(angle) * 0.045, y: 0.52 + Math.sin(angle) * 0.09 };
+    });
+    const old = createFaceSkinMask(face, 200, 200), dodgeBurn = createFaceDodgeBurnMask(face, 200, 200);
+    expect(old[104 * 200 + 100]).toBe(255);
+    expect(dodgeBurn[104 * 200 + 100]).toBe(0);
+    expect(dodgeBurn[100 * 200 + 76]).toBeGreaterThan(0);
+    for (let i = 0; i < old.length; i++) expect(dodgeBurn[i]).toBeLessThanOrEqual(old[i]);
+  });
   it('limits all edits to the selected face and retains fully weighted cheek skin', () => {
     const mask = createFaceSkinMask(fixture(), 200, 200);
     expect(mask).toHaveLength(40_000);

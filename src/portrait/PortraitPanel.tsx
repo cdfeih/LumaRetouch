@@ -38,7 +38,7 @@ const shapeOf = (settings: PortraitSettings): ShapeSettings => Object.fromEntrie
 const hasBodySettings = (settings: PortraitSettings | ShapeSettings) => BODY_FIELDS.some(key => Boolean(settings[key]));
 const hasShape = (settings: ShapeSettings) => SHAPE_FIELDS.some(key => Boolean(settings[key]));
 const SECTION_HELP: Record<PortraitSection, string> = {
-  natural: '轻柔修饰面部皮肤与局部小红点。提亮可控制自然美白程度，默认保持脸型与身材。',
+  natural: '轻柔修饰面部皮肤与局部小红点；中性灰光影通过局部提亮、压暗修匀明暗，默认关闭。保持原有脸型与身材。',
   skin: '调整面部皮肤的冷暖、黄调、泛红和红润程度。眼眉、嘴唇与背景不随肤色滑块变化。',
   face: '按面部关键点轻调轮廓，固定眼眉、鼻子和嘴部形状。建议从小幅度开始；红色保护区仍保留原像素。',
   body: '按身体关键点调整腰、手臂、腿和肩宽。轮廓旁背景可能随变形移动，可用红色画笔保护门框、栏杆或其他人物。',
@@ -216,6 +216,10 @@ export const PortraitPanel = forwardRef<PortraitPanelHandle, Props>(function Por
     {PORTRAIT_SECTIONS.map(group => <section key={group.id} id={`portrait-controls-${group.id}`} className="property-section portrait-settings" role="tabpanel" aria-label={group.label} hidden={section !== group.id}>
       <div className="property-title">{group.label}<span>{group.id === 'face' || group.id === 'body' ? '默认关闭 · 轻度塑形' : '本地处理'}</span></div>
       <p className="preset-description">{SECTION_HELP[group.id]}</p>
+      {group.id === 'natural' && <div className="portrait-dodge-burn"><button className="button button-secondary full-width" data-testid="portrait-dodge-burn" disabled={disabled} onClick={() => {
+        changeSettings(Object.fromEntries(PORTRAIT_FIELDS.filter(field => !SHAPE_FIELDS.some(key => key === field.key)).map(field => [field.key, field.key === 'dodgeBurn' ? 35 : 0])));
+        notify('已选择中性灰磨皮：光影强度 35%，其他肤色与细节修饰归零，塑形参数保留。点击开始后生效。');
+      }}>中性灰磨皮</button><p className="preset-description">只启用光影修饰，关闭普通磨皮、提亮等肤色与细节项，保留当前塑形参数。避开眼眉鼻口，尽量保留细纹；建议先用 20～40%，再点 100%细节检查。本地算法辅助，不等同于商业级中性灰模型。</p></div>}
       {mixed && <p className="portrait-mixed">各人物参数不同。这里显示第一位人物的值；调节某项会统一该项。保存预设前请选一位人物。</p>}
       {group.id === 'body' && !bodyScanned && <p className="portrait-mixed">先点“识别人像与身体”，定位腰、肩和四肢后即可调节。</p>}
       {fieldsForSection(group.id).map(field => <label className="slider-field" key={field.key}><span><span>{field.label}</span><output>{referenceSettings[field.key]}{field.min < 0 ? '' : '%'}</output></span><input type="range" aria-label={field.label} min={field.min} max={field.max} value={referenceSettings[field.key]} disabled={disabled || !canAdjust(field) && referenceSettings[field.key] === 0} onChange={event => changeSettings({ [field.key]: Number(event.target.value) })} style={{ '--range-progress': `${(referenceSettings[field.key] - field.min) / (field.max - field.min) * 100}%` } as CSSProperties} /></label>)}
@@ -227,8 +231,8 @@ export const PortraitPanel = forwardRef<PortraitPanelHandle, Props>(function Por
       <div className="property-title">个人预设<span>{presets.length}/20 · 浏览器本地</span></div>
       <label className="text-field"><span>预设名称</span><input value={presetName} maxLength={32} onChange={event => setPresetName(event.target.value)} disabled={disabled || mixed} placeholder="例如：自然肤色与轻塑形" /></label>
       <button className="button button-secondary full-width" disabled={disabled || !presetName.trim() || mixed} onClick={savePreset}>保存为个人预设</button>
-      <div className="portrait-preset-list">{presets.map(preset => <div className="portrait-preset" key={preset.id}><button aria-label={`应用预设 ${preset.name}`} disabled={disabled} onClick={() => { changeSettings(normalizePortraitSettings(preset.settings)); notify(`已套用“${preset.name}”参数，点击开始后生效。`); }}><span>{preset.name}</span><small>磨皮 {preset.settings.smoothing} · 提亮 {preset.settings.brightening} · 瘦脸 {preset.settings.faceSlim}</small></button><button aria-label={`删除预设 ${preset.name}`} disabled={disabled} onClick={() => { try { setPresets(deletePortraitPreset(preset.id)); notify('个人预设已删除。'); } catch (error) { notify(error instanceof Error ? error.message : '删除失败', true); } }}><Trash2 size={13} /></button></div>)}</div>
-      <p className="preset-description">只保存人像参数，不保存照片、人物关键点或 API Key。旧版自然精修预设仍可使用，新增塑形默认关闭。</p>
+      <div className="portrait-preset-list">{presets.map(preset => <div className="portrait-preset" key={preset.id}><button aria-label={`应用预设 ${preset.name}`} disabled={disabled} onClick={() => { changeSettings(normalizePortraitSettings(preset.settings)); notify(`已套用“${preset.name}”参数，点击开始后生效。`); }}><span>{preset.name}</span><small>光影 {preset.settings.dodgeBurn} · 磨皮 {preset.settings.smoothing} · 瘦脸 {preset.settings.faceSlim}</small></button><button aria-label={`删除预设 ${preset.name}`} disabled={disabled} onClick={() => { try { setPresets(deletePortraitPreset(preset.id)); notify('个人预设已删除。'); } catch (error) { notify(error instanceof Error ? error.message : '删除失败', true); } }}><Trash2 size={13} /></button></div>)}</div>
+      <p className="preset-description">只保存人像参数，不保存照片、人物关键点或 API Key。旧版自然精修预设仍可使用，新增中性灰光影与塑形默认关闭。</p>
     </section>
   </div>;
 });

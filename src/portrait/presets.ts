@@ -16,7 +16,7 @@ function parseSettings(value: unknown): PortraitSettings | null {
   const record = value as Record<string, unknown>;
   if (!PORTRAIT_FIELDS.every(field => {
     const number = record[field.key];
-    if (number === undefined) return field.section !== 'natural';
+    if (number === undefined) return field.key === 'dodgeBurn' || field.section !== 'natural';
     return typeof number === 'number' && Number.isFinite(number) && number >= field.min && number <= field.max;
   })) return null;
   return normalizePortraitSettings(record as Partial<PortraitSettings>);

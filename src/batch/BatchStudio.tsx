@@ -46,6 +46,9 @@ const RECOMMENDED: PresetOption[] = [
   { id: 'gentle', name: '轻柔人像', description: '柔和修饰肤色，并轻减黑眼圈；默认不塑形。', settings: {
     ...DEFAULT_PORTRAIT_SETTINGS, darkCircles: 8,
   } },
+  { id: 'dodge-burn', name: '中性灰保纹理', description: '局部提亮、压暗修匀皮肤明暗，关闭普通磨皮与塑形；建议先试一张并放大复核。', settings: {
+    ...ZERO_PORTRAIT_SETTINGS, dodgeBurn: 35,
+  } },
 ];
 const abortError = () => new DOMException('已取消本次批量操作。', 'AbortError');
 const checkAbort = (signal: AbortSignal) => { if (signal.aborted) throw abortError(); };
@@ -337,7 +340,7 @@ export function BatchStudio({ open, onClose, onBusy, initialSettings, notify }: 
           <div className="batch-step-title"><span>02</span><h3>选择一套参数</h3></div>
           <label className="batch-select"><span>批量预设</span><select data-testid="batch-preset" value={presetId} disabled={locked} onChange={event => setPresetId(event.target.value)}><optgroup label="推荐 · 默认不塑形">{RECOMMENDED.map(value => <option key={value.id} value={value.id}>{value.name}</option>)}</optgroup><optgroup label="我的参数"><option value="current">当前单张参数</option>{personal.map(value => <option key={value.id} value={`personal:${value.id}`}>{value.name}</option>)}</optgroup></select></label>
           <p className="batch-help">{preset.description}</p>
-          <details className="batch-parameters"><summary>查看本次 20 项参数</summary><div>{PORTRAIT_FIELDS.map(field => <span key={field.key}>{field.label}<b>{preset.settings[field.key]}</b></span>)}</div></details>
+          <details className="batch-parameters"><summary>查看本次 {PORTRAIT_FIELDS.length} 项参数</summary><div>{PORTRAIT_FIELDS.map(field => <span key={field.key}>{field.label}<b>{preset.settings[field.key]}</b></span>)}</div></details>
           <div className="batch-note"><Check size={16} /><p>本机处理，不需要 API Key，不上传照片。每张中的所有识别人物共用这套参数，不进行跨照片身份匹配，也不会搬用单张编辑器的红绿画笔。</p></div>
           <div className="batch-step-title"><span>03</span><h3>试修与处理</h3></div>
           <div className="batch-run-buttons"><button className="batch-secondary" data-testid="batch-trial" disabled={locked || !selectedOriginals.length || Boolean(storageError)} onClick={() => void run('trial')}><Play size={15} />先试 1 张</button><button className="batch-primary" data-testid="batch-run" disabled={locked || !selectedOriginals.length || Boolean(storageError)} onClick={() => void run('selected')}><Check size={15} />处理选中（{selectedRows.length}）</button><button className="batch-secondary" data-testid="batch-retry" disabled={locked || !selectedOriginals.some(row => row.status === 'failed' || row.status === 'cancelled') || Boolean(storageError)} onClick={() => void run('retry')}><RotateCcw size={14} />重试选中失败 / 取消项</button></div>

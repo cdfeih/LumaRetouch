@@ -3,12 +3,16 @@
  * eyebrows, nostrils, and lips belong to the caller's skin masks. These routines
  * neither detect facial features nor generate or move any image content.
  */
+import { buildDodgeBurnCorrection } from './dodge-burn'
+
 export type NaturalRetouchSettings = {
   smoothing: number
   blemish: number
   evenness: number
   brightening: number
   shine: number
+  /** Opt-in local dodge and burn; old presets keep it disabled. */
+  dodgeBurn?: number
   /** Signed temperature adjustment; all added controls are opt-in. */
   warmth?: number
   deYellow?: number
@@ -26,6 +30,7 @@ export const DEFAULT_NATURAL_SETTINGS: Readonly<NaturalRetouchSettings> = Object
   evenness: 20,
   brightening: 16,
   shine: 12,
+  dodgeBurn: 0,
   warmth: 0,
   deYellow: 0,
   deRedness: 0,
@@ -46,11 +51,13 @@ export type PortraitDetailMasks = {
 export type PortraitRetouchSubject = {
   /** One alpha byte per pixel: 0 leaves source untouched; 255 applies full settings. */
   mask: Uint8ClampedArray
+  /** More conservative skin gate excluding nose structure as well as eye/lip holes. */
+  dodgeBurnMask?: Uint8ClampedArray
   settings: NaturalRetouchSettings
   details?: PortraitDetailMasks
 }
 
-const KEYS = ['smoothing', 'blemish', 'evenness', 'brightening', 'shine', 'warmth', 'deYellow', 'deRedness', 'rosiness', 'darkCircles', 'teethWhitening', 'eyeWhitening', 'lipColor'] as const
+const KEYS = ['smoothing', 'blemish', 'evenness', 'brightening', 'shine', 'dodgeBurn', 'warmth', 'deYellow', 'deRedness', 'rosiness', 'darkCircles', 'teethWhitening', 'eyeWhitening', 'lipColor'] as const
 const luminance = (r: number, g: number, b: number) => r * 0.2126 + g * 0.7152 + b * 0.0722
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value))
 
@@ -101,6 +108,7 @@ export function retouchPortraitPixels(
   if (protection && protection.length !== count) throw new Error('人像保护区尺寸不一致。')
   for (const subject of subjects) {
     if (subject.mask.length !== count) throw new Error('人像皮肤选区尺寸不一致。')
+    if (subject.dodgeBurnMask && subject.dodgeBurnMask.length !== count) throw new Error('中性灰皮肤选区尺寸不一致。')
     if (subject.details && Object.values(subject.details).some(mask => mask.length !== count)) throw new Error('人像细节选区尺寸不一致。')
   }
   const output = new Uint8ClampedArray(source)
@@ -115,6 +123,8 @@ export function retouchPortraitPixels(
     const mask = subject.mask
     const details = subject.details
     const settings = normalized(subject.settings)
+    const dodgeBurn = settings.dodgeBurn > 0
+      ? buildDodgeBurnCorrection(source, width, height, subject.dodgeBurnMask ?? mask, protection) : null
     const isIdentity = KEYS.every(key => settings[key] === 0)
     let left = width, top = height, right = -1, bottom = -1
     let meanR = 0, meanG = 0, meanB = 0, total = 0
@@ -190,6 +200,14 @@ export function retouchPortraitPixels(
             }
           }
 
+          if (dodgeBurn) {
+            // Add a slowly varying achromatic correction, retaining the source
+            // texture and channel differences instead of replacing RGB by blur.
+            const feather = subject.dodgeBurnMask ? subject.dodgeBurnMask[pixel] / amount : 1
+            const correction = clamp(dodgeBurn[pixel] * settings.dodgeBurn * feather,
+              -Math.max(0, Math.min(red, green, blue) - 1), Math.max(0, 254 - Math.max(red, green, blue)))
+            red += correction; green += correction; blue += correction
+          }
           let light = luminance(red, green, blue)
           if (settings.evenness > 0 && meanY > 0) {
             // Harmonize chroma gently while preserving the pixel's luminance,

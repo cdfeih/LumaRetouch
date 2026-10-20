@@ -1,4 +1,4 @@
-import { createFaceDetailMasks, createFaceSkinMask } from './detection'
+import { createFaceDetailMasks, createFaceDodgeBurnMask, createFaceSkinMask } from './detection'
 import { isEyeWhitePixel, isLipPixel, isTeethPixel } from './retouch'
 import type { PortraitFace } from './detection'
 import type { NaturalRetouchSettings, PortraitDetailMasks } from './retouch'
@@ -70,6 +70,23 @@ function alphaChannel(rgba: Uint8ClampedArray): Uint8ClampedArray {
   return result
 }
 
+/** Any source protection coverage survives resampling to the worker grid. */
+export function scaleProtectionAlpha(source: Uint8ClampedArray, width: number, height: number, targetWidth: number, targetHeight: number): Uint8ClampedArray {
+  if (![width, height, targetWidth, targetHeight].every(value => Number.isSafeInteger(value) && value > 0)
+    || source.length !== width * height) throw new Error('人像保护区缩放尺寸不一致。')
+  const result = new Uint8ClampedArray(targetWidth * targetHeight)
+  for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) {
+    if (!source[y * width + x]) continue
+    const left = Math.floor(x * targetWidth / width), right = Math.ceil((x + 1) * targetWidth / width)
+    const top = Math.floor(y * targetHeight / height), bottom = Math.ceil((y + 1) * targetHeight / height)
+    for (let row = top; row < bottom; row++) result.fill(255, row * targetWidth + left, row * targetWidth + right)
+  }
+  return result
+}
+
+const OTHER_SKIN_CONTROLS = ['smoothing', 'blemish', 'evenness', 'brightening', 'shine', 'warmth', 'deYellow', 'deRedness', 'rosiness'] as const
+const isDodgeBurnSkinOnly = (settings: NaturalRetouchSettings) => OTHER_SKIN_CONTROLS.every(key => !settings[key])
+
 function runWorker(request: RetouchWorkerRequest, signal: AbortSignal): Promise<Int16Array> {
   checkAbort(signal)
   return new Promise((resolve, reject) => {
@@ -89,7 +106,8 @@ function runWorker(request: RetouchWorkerRequest, signal: AbortSignal): Promise<
     }
     worker.onerror = () => { finish(); reject(new Error('本地自然精修线程加载或运行失败，请刷新后重试。')) }
     try {
-      worker.postMessage(request, [request.source, ...request.subjects.flatMap(subject => [subject.mask, ...Object.values(subject.details ?? {})])])
+      worker.postMessage(request, [request.source, ...(request.protection ? [request.protection] : []),
+        ...request.subjects.flatMap(subject => [subject.mask, ...(subject.dodgeBurnMask ? [subject.dodgeBurnMask] : []), ...Object.values(subject.details ?? {})])])
     } catch { finish(); reject(new Error('图片无法传入本地精修线程，请重试。')) }
   })
 }
@@ -126,10 +144,11 @@ export function mergeNaturalRetouchStrip(
   current: Uint8ClampedArray,
   skin: Uint8ClampedArray,
   delta: Int16Array,
-  dimensions: { width: number; height: number; workWidth: number; workHeight: number; startY: number },
+  dimensions: { width: number; height: number; workWidth: number; workHeight: number; startY: number; achromatic?: boolean },
   protection?: Uint8ClampedArray | null,
   selection?: Uint8ClampedArray | null,
   adjustment?: Uint8ClampedArray | null,
+  achromatic?: Uint8ClampedArray | null,
 ): boolean {
   const { width, height, workWidth, workHeight, startY } = dimensions
   if (![width, height, workWidth, workHeight].every(value => Number.isSafeInteger(value) && value > 0)
@@ -137,7 +156,7 @@ export function mergeNaturalRetouchStrip(
     || baseline.length !== current.length || current.length % 4 !== 0 || skin.length !== current.length / 4
     || skin.length % width !== 0 || startY + skin.length / width > height
     || (protection && protection.length !== skin.length) || (selection && selection.length !== skin.length)
-    || (adjustment && adjustment.length !== skin.length)
+    || (adjustment && adjustment.length !== skin.length) || (achromatic && achromatic.length !== skin.length)
     || delta.length !== workWidth * workHeight * 3) throw new Error('自然精修合成像素尺寸不一致。')
   let changed = false
   const rows = skin.length / width
@@ -153,10 +172,20 @@ export function mergeNaturalRetouchStrip(
       const a = (y0 * workWidth + x0) * 3, b = (y0 * workWidth + x1) * 3
       const c = (y1 * workWidth + x0) * 3, d = (y1 * workWidth + x1) * 3
       const amount = selection ? selection[pixel] / 255 : 1
+      let achromaticDelta: number | null = null
+      if (dimensions.achromatic || achromatic?.[pixel]) {
+        const upper = delta[a] * (1 - fx) + delta[b] * fx
+        const lower = delta[c] * (1 - fx) + delta[d] * fx
+        const requested = (upper * (1 - fy) + lower * fy) * (adjustment ? adjustment[pixel] / 255 : 1)
+        // Original pixels may have brighter highlights than the downsampled
+        // work image. One shared limit preserves chroma and prevents clipping.
+        achromaticDelta = Math.max(-Math.max(0, Math.min(baseline[offset], baseline[offset + 1], baseline[offset + 2]) - 1),
+          Math.min(Math.max(0, 254 - Math.max(baseline[offset], baseline[offset + 1], baseline[offset + 2])), requested))
+      }
       for (let channel = 0; channel < 3; channel += 1) {
         const top = delta[a + channel] * (1 - fx) + delta[b + channel] * fx
         const bottom = delta[c + channel] * (1 - fx) + delta[d + channel] * fx
-        const target = baseline[offset + channel] + (top * (1 - fy) + bottom * fy) * (adjustment ? adjustment[pixel] / 255 : 1)
+        const target = baseline[offset + channel] + (achromaticDelta ?? (top * (1 - fy) + bottom * fy) * (adjustment ? adjustment[pixel] / 255 : 1))
         const value = Math.round(Math.max(0, Math.min(255, current[offset + channel] + (target - current[offset + channel]) * amount)))
         if (value !== current[offset + channel]) changed = true
         current[offset + channel] = value
@@ -222,11 +251,16 @@ export async function renderNaturalRetouch(
     const work = make(workWidth, workHeight)
     work.context.drawImage(baselineImage, 0, 0, workWidth, workHeight)
     const workSource = work.context.getImageData(0, 0, workWidth, workHeight).data
+    const hasDodgeBurn = subjects.some(subject => (subject.settings.dodgeBurn ?? 0) > 0)
+    const workProtection = protection && hasDodgeBurn ? scaleProtectionAlpha(
+      alphaChannel(protection.getContext('2d')!.getImageData(0, 0, protection.width, protection.height).data),
+      protection.width, protection.height, workWidth, workHeight) : null
     const workSubjects = subjects.map(subject => {
       const hasDetails = ['darkCircles', 'teethWhitening', 'eyeWhitening', 'lipColor'].some(key => subject.settings[key as keyof NaturalRetouchSettings] !== undefined)
       const masks = hasDetails ? createFaceDetailMasks(subject.face, workWidth, workHeight) : null
       return {
         mask: createFaceSkinMask(subject.face, workWidth, workHeight).buffer as ArrayBuffer,
+        dodgeBurnMask: (subject.settings.dodgeBurn ?? 0) > 0 ? createFaceDodgeBurnMask(subject.face, workWidth, workHeight).buffer as ArrayBuffer : undefined,
         settings: subject.settings,
         details: masks ? {
           underEyes: masks.underEyes.buffer as ArrayBuffer, teeth: masks.teeth.buffer as ArrayBuffer,
@@ -234,19 +268,26 @@ export async function renderNaturalRetouch(
         } : undefined,
       }
     })
-    const delta = await runWorker({ source: workSource.buffer as ArrayBuffer, width: workWidth, height: workHeight, subjects: workSubjects }, signal)
+    const delta = await runWorker({ source: workSource.buffer as ArrayBuffer, width: workWidth, height: workHeight, subjects: workSubjects,
+      protection: workProtection?.buffer as ArrayBuffer | undefined }, signal)
     work.canvas.width = work.canvas.height = 1
     checkAbort(signal)
     const union = new Uint8ClampedArray(width * height)
     for (const subject of subjects) {
       const mask = createFaceSkinMask(subject.face, width, height)
-      const skinAdjustment = ['smoothing', 'blemish', 'evenness', 'brightening', 'shine', 'warmth', 'deYellow', 'deRedness', 'rosiness'].some(key => {
+      const otherSkinAdjustment = OTHER_SKIN_CONTROLS.some(key => {
         const value = subject.settings[key as keyof NaturalRetouchSettings]
         return typeof value === 'number' && Number.isFinite(value) && value !== 0
       })
-      // Bit 1 marks baseline restoration; bit 2 permits a skin delta. Keeping
-      // these separate prevents detail-only upsampling from leaking onto cheeks.
-      for (let pixel = 0; pixel < union.length; pixel += 1) if (mask[pixel]) union[pixel] |= skinAdjustment ? 3 : 1
+      // Always restore selected skin, including old color changes on the nose.
+      // Bit 2 permits a delta; bit 4 marks achromatic D&B, bit 8 allows other
+      // skin color work. Per-pixel gates keep different people's settings apart.
+      for (let pixel = 0; pixel < union.length; pixel += 1) if (mask[pixel]) union[pixel] |= otherSkinAdjustment ? 11 : 1
+      if ((subject.settings.dodgeBurn ?? 0) > 0) {
+        const dodgeMask = createFaceDodgeBurnMask(subject.face, width, height)
+        const flags = isDodgeBurnSkinOnly(subject.settings) ? 6 : 2
+        for (let pixel = 0; pixel < union.length; pixel++) if (dodgeMask[pixel]) union[pixel] |= flags
+      }
       checkAbort(signal)
     }
     const target = make(width, height)
@@ -284,6 +325,7 @@ export async function renderNaturalRetouch(
       // Build feature masks per strip to avoid four full-size buffers per face.
       const editable = new Uint8ClampedArray(union.subarray(y * width, (y + stripRows) * width))
       const adjustment = Uint8ClampedArray.from(editable, flags => flags & 2 ? 255 : 0)
+      const achromatic = hasDodgeBurn ? Uint8ClampedArray.from(editable, flags => flags & 4 && !(flags & 8) ? 255 : 0) : null
       for (const subject of subjects) {
         const settings = subject.settings
         if (settings.teethWhitening === undefined && settings.eyeWhitening === undefined && settings.lipColor === undefined && !(settings.darkCircles! > 0)) continue
@@ -296,7 +338,7 @@ export async function renderNaturalRetouch(
         includePortraitDetailPixels(editable, details, before.data, settings, adjustment)
       }
       const stripChanged = mergeNaturalRetouchStrip(before.data, pixels.data, editable, delta,
-        { width, height, workWidth, workHeight, startY: y }, protectionAlpha, selectionAlpha, adjustment)
+        { width, height, workWidth, workHeight, startY: y }, protectionAlpha, selectionAlpha, adjustment, achromatic)
       if (stripChanged) { target.context.putImageData(pixels, 0, y); changed = true }
       // Yield so cancellation and pointer/UI events can run during large exports.
       await new Promise<void>(resolve => setTimeout(resolve, 0))
