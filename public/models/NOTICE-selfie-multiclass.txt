@@ -1,0 +1,19 @@
+MediaPipe Selfie Multiclass Segmentation, Google LLC
+Model author: Adel Ahmadyan, Google. Model card date: May 2023.
+
+Model weights: selfie_multiclass_256x256.tflite, float32, fixed version 1.
+Original source:
+https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_multiclass_256x256/float32/1/selfie_multiclass_256x256.tflite
+SHA-256: c6748b1253a99067ef71f7e26ca71096cd449baefa8f101900ea23016507e0e0
+
+The original weights and model card are redistributed without modification.
+The official model card states Apache License, Version 2.0.
+Full license: LICENSE-mediapipe.txt in this directory.
+Official model card, also bundled as Model-Card-Multiclass-Segmentation.pdf:
+https://storage.googleapis.com/mediapipe-assets/Model%20Card%20Multiclass%20Segmentation.pdf
+Official task documentation and class labels:
+https://developers.google.com/edge/mediapipe/solutions/vision/image_segmenter
+
+Application integration: confidence thresholding intersects face-skin with
+landmark masks and manual protection. It does not alter or retrain the model.
+The application is not endorsed by Google or MediaPipe.

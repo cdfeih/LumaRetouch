@@ -191,7 +191,7 @@ try {
       }
       ctx.putImageData(pixels, 0, 0); const source = canvas.toDataURL('image/png');
       const settings = { ...ZERO_PORTRAIT_SETTINGS, dodgeBurn: 100 };
-      const output = await renderNaturalRetouch(source, source, [{ face, settings }]);
+      const output = await renderNaturalRetouch(source, source, [{ face, settings }], { skinProtection: 'geometry' });
       const image = new Image(); image.src = output; await image.decode();
       const afterCanvas = document.createElement('canvas'); afterCanvas.width = width; afterCanvas.height = height;
       const afterCtx = afterCanvas.getContext('2d', { willReadFrequently: true }); afterCtx.drawImage(image, 0, 0);
@@ -220,7 +220,7 @@ try {
           contrastAfter += Math.abs(luma(after, i + 4) - luma(after, i)); pairs++;
         }
       }
-      const repeated = await renderNaturalRetouch(source, output, [{ face, settings }]);
+      const repeated = await renderNaturalRetouch(source, output, [{ face, settings }], { skinProtection: 'geometry' });
       const reset = await renderNaturalRetouch(source, output, [{ face, settings: { ...ZERO_PORTRAIT_SETTINGS } }]);
       window.__dbSynthetic = { source, output, repeated, reset };
       return { width: image.naturalWidth, height: image.naturalHeight, changed, outsideChanged, chromaChanged, dark: spotEvidence(dark), bright: spotEvidence(bright), pairSamples: pairs, textureContrastBefore: contrastBefore / pairs, textureContrastAfter: contrastAfter / pairs, textureRatio: contrastAfter / contrastBefore };

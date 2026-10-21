@@ -58,6 +58,14 @@ describe('original-resolution natural finishing merge', () => {
     expect([...current]).toEqual([50, 50, 50, 255, 60, 60, 60, 255, 80, 80, 80, 255, 90, 90, 90, 255])
   })
 
+  it('blends half-transparent green once against the fixed source rather than accumulating prior results', () => {
+    const source = new Uint8ClampedArray([100, 90, 80, 255]), current = new Uint8ClampedArray(source);
+    const dimensions = { width: 1, height: 1, workWidth: 1, workHeight: 1, startY: 0 };
+    const render = () => mergeNaturalRetouchStrip(source, current, new Uint8ClampedArray([255]), new Int16Array([40, 30, 20]), dimensions, null, new Uint8ClampedArray([128]));
+    render(); const first = new Uint8ClampedArray(current); render(); expect(current).toEqual(first);
+    expect([...current]).toEqual([120, 105, 90, 255]);
+  })
+
   it('uses global row coordinates for strips and reports a fully protected strip unchanged', () => {
     const baseline = new Uint8ClampedArray([60, 60, 60, 255]), current = new Uint8ClampedArray(baseline)
     const delta = new Int16Array([0, 0, 0, 30, 30, 30])

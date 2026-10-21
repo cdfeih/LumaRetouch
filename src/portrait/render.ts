@@ -1,18 +1,24 @@
-import { createFaceDetailMasks, createFaceDodgeBurnMask, createFaceSkinMask } from './detection'
+import { createFaceContourMask, createFaceDetailMasks, createFaceDodgeBurnMask, createFaceSkinMask } from './detection'
 import { isEyeWhitePixel, isLipPixel, isTeethPixel } from './retouch'
 import type { PortraitFace } from './detection'
 import type { NaturalRetouchSettings, PortraitDetailMasks } from './retouch'
 import type { RetouchWorkerRequest, RetouchWorkerResponse } from './retouch.worker'
+import { faceInRegion, planFaceWorkRegion, protectionInRegion } from './regions'
+import { segmentFaceSkin, semanticCoverage } from './semantic-skin'
 
 export type NaturalRetouchSubject = { face: PortraitFace; settings: NaturalRetouchSettings }
 export type NaturalRetouchOptions = {
   protection?: HTMLCanvasElement | null
   selection?: HTMLCanvasElement | null
   signal?: AbortSignal
+  /** Unselected faces also remain barriers during local neighborhood analysis. */
+  excludedFaces?: PortraitFace[]
+  /** Geometry-only mode is reserved for analytic synthetic fixtures. The
+   * production default also excludes uncertain/non-face semantic regions. */
+  skinProtection?: 'semantic' | 'geometry'
 }
 
 const MAX_PIXELS = 40_000_000
-const WORK_EDGE = 1600
 
 function cancelled(): DOMException {
   return new DOMException('已取消本次自然精修。', 'AbortError')
@@ -85,6 +91,7 @@ export function scaleProtectionAlpha(source: Uint8ClampedArray, width: number, h
 }
 
 const OTHER_SKIN_CONTROLS = ['smoothing', 'blemish', 'evenness', 'brightening', 'shine', 'warmth', 'deYellow', 'deRedness', 'rosiness'] as const
+const COLOR_CONTROLS = [...OTHER_SKIN_CONTROLS, 'dodgeBurn', 'darkCircles', 'teethWhitening', 'eyeWhitening', 'lipColor'] as const
 const isDodgeBurnSkinOnly = (settings: NaturalRetouchSettings) => OTHER_SKIN_CONTROLS.every(key => !settings[key])
 
 function runWorker(request: RetouchWorkerRequest, signal: AbortSignal): Promise<Int16Array> {
@@ -186,7 +193,7 @@ export function mergeNaturalRetouchStrip(
         const top = delta[a + channel] * (1 - fx) + delta[b + channel] * fx
         const bottom = delta[c + channel] * (1 - fx) + delta[d + channel] * fx
         const target = baseline[offset + channel] + (achromaticDelta ?? (top * (1 - fy) + bottom * fy) * (adjustment ? adjustment[pixel] / 255 : 1))
-        const value = Math.round(Math.max(0, Math.min(255, current[offset + channel] + (target - current[offset + channel]) * amount)))
+        const value = Math.round(Math.max(0, Math.min(255, baseline[offset + channel] + (target - baseline[offset + channel]) * amount)))
         if (value !== current[offset + channel]) changed = true
         current[offset + channel] = value
       }
@@ -246,102 +253,110 @@ export async function renderNaturalRetouch(
     }
     const selection = snapshot(options.selection)
     const protection = snapshot(options.protection)
-    const scale = Math.min(1, WORK_EDGE / Math.max(width, height))
-    const workWidth = Math.max(1, Math.round(width * scale)), workHeight = Math.max(1, Math.round(height * scale))
-    const work = make(workWidth, workHeight)
-    work.context.drawImage(baselineImage, 0, 0, workWidth, workHeight)
-    const workSource = work.context.getImageData(0, 0, workWidth, workHeight).data
-    const hasDodgeBurn = subjects.some(subject => (subject.settings.dodgeBurn ?? 0) > 0)
-    const workProtection = protection ? scaleProtectionAlpha(
-      alphaChannel(protection.getContext('2d')!.getImageData(0, 0, protection.width, protection.height).data),
-      protection.width, protection.height, workWidth, workHeight) : null
-    const workSubjects = subjects.map(subject => {
-      const hasDetails = ['darkCircles', 'teethWhitening', 'eyeWhitening', 'lipColor'].some(key => subject.settings[key as keyof NaturalRetouchSettings] !== undefined)
-      const masks = hasDetails ? createFaceDetailMasks(subject.face, workWidth, workHeight) : null
-      return {
-        mask: createFaceSkinMask(subject.face, workWidth, workHeight).buffer as ArrayBuffer,
-        dodgeBurnMask: (subject.settings.dodgeBurn ?? 0) > 0 ? createFaceDodgeBurnMask(subject.face, workWidth, workHeight).buffer as ArrayBuffer : undefined,
-        settings: subject.settings,
-        details: masks ? {
-          underEyes: masks.underEyes.buffer as ArrayBuffer, teeth: masks.teeth.buffer as ArrayBuffer,
-          eyes: masks.eyes.buffer as ArrayBuffer, lips: masks.lips.buffer as ArrayBuffer,
-        } : undefined,
-      }
-    })
-    const delta = await runWorker({ source: workSource.buffer as ArrayBuffer, width: workWidth, height: workHeight, subjects: workSubjects,
-      protection: workProtection?.buffer as ArrayBuffer | undefined }, signal)
-    work.canvas.width = work.canvas.height = 1
-    checkAbort(signal)
-    const union = new Uint8ClampedArray(width * height)
-    for (const subject of subjects) {
-      const mask = createFaceSkinMask(subject.face, width, height)
-      const otherSkinAdjustment = OTHER_SKIN_CONTROLS.some(key => {
-        const value = subject.settings[key as keyof NaturalRetouchSettings]
-        return typeof value === 'number' && Number.isFinite(value) && value !== 0
-      })
-      // Always restore selected skin, including old color changes on the nose.
-      // Bit 2 permits a delta; bit 4 marks achromatic D&B, bit 8 allows other
-      // skin color work. Per-pixel gates keep different people's settings apart.
-      for (let pixel = 0; pixel < union.length; pixel += 1) if (mask[pixel]) union[pixel] |= otherSkinAdjustment ? 11 : 1
-      if ((subject.settings.dodgeBurn ?? 0) > 0) {
-        const dodgeMask = createFaceDodgeBurnMask(subject.face, width, height)
-        const flags = isDodgeBurnSkinOnly(subject.settings) ? 6 : 2
-        for (let pixel = 0; pixel < union.length; pixel++) if (dodgeMask[pixel]) union[pixel] |= flags
-      }
-      checkAbort(signal)
-    }
+    const protectionPixels = protection ? alphaChannel(protection.getContext('2d')!.getImageData(0, 0, protection.width, protection.height).data) : null
     const target = make(width, height)
     target.context.drawImage(currentImage, 0, 0)
-    // Only two small RGBA strips are read. No full-resolution RGBA copy of the
-    // baseline or each person's mask is retained alongside current output.
-    const rows = Math.min(128, height), baseStrip = make(width, rows)
-    const protectionStrip = protection ? make(width, rows) : null
-    if (protectionStrip) protectionStrip.context.imageSmoothingEnabled = false
-    const selectionStrip = selection ? make(width, rows) : null
-    // Keep the user's zero-alpha green region a hard spatial limit. Brush alpha
-    // still feathers within its own selected pixels, without interpolation spill.
-    if (selectionStrip) selectionStrip.context.imageSmoothingEnabled = false
     let changed = false
-    for (let y = 0; y < height; y += rows) {
+    // One bounded work crop/Worker at a time. A distant face retains its native
+    // pixels even on a 40MP photo; no full-photo mask/delta per person is kept.
+    for (let subjectIndex = 0; subjectIndex < subjects.length; subjectIndex++) {
       checkAbort(signal)
-      const stripRows = Math.min(rows, height - y)
-      baseStrip.context.clearRect(0, 0, width, rows)
-      baseStrip.context.drawImage(baselineImage, 0, -y, width, height)
-      const before = baseStrip.context.getImageData(0, 0, width, stripRows)
-      const pixels = target.context.getImageData(0, y, width, stripRows)
-      let protectionAlpha: Uint8ClampedArray | null = null, selectionAlpha: Uint8ClampedArray | null = null
-      if (protection && protectionStrip) {
-        protectionStrip.context.clearRect(0, 0, width, rows)
-        protectionStrip.context.drawImage(protection, 0, -y, width, height)
-        protectionAlpha = alphaChannel(protectionStrip.context.getImageData(0, 0, width, stripRows).data)
+      const subject = subjects[subjectIndex], settings = subject.settings
+      const region = planFaceWorkRegion(subject.face, width, height)
+      const localFace = faceInRegion(subject.face, width, height, region)
+      const { workWidth, workHeight } = region
+      const work = make(workWidth, workHeight)
+      work.context.drawImage(baselineImage, region.x, region.y, region.width, region.height, 0, 0, workWidth, workHeight)
+      const workSource = work.context.getImageData(0, 0, workWidth, workHeight).data
+      const workSkin = createFaceSkinMask(localFace, workWidth, workHeight)
+      const hasDodgeBurn = (settings.dodgeBurn ?? 0) > 0
+      const workDodge = hasDodgeBurn ? createFaceDodgeBurnMask(localFace, workWidth, workHeight) : null
+      const hasDetails = ['darkCircles', 'teethWhitening', 'eyeWhitening', 'lipColor'].some(key => settings[key as keyof NaturalRetouchSettings] !== undefined)
+      const workDetails = hasDetails ? createFaceDetailMasks(localFace, workWidth, workHeight) : null
+      const workDetailMasks = Object.values(workDetails ?? {})
+      const workProtection = protectionPixels && protection ? protectionInRegion(protectionPixels, protection.width, protection.height, width, height, region, workWidth, workHeight) : null
+      const activeSettings = COLOR_CONTROLS.some(key => { const value = settings[key]; return typeof value === 'number' && Number.isFinite(value) && value !== 0 })
+      const semantic = options.skinProtection !== 'geometry' && activeSettings ? await segmentFaceSkin(work.canvas, signal) : null
+      if (semantic) for (let y = 0; y < workHeight; y++) for (let x = 0; x < workWidth; x++) {
+        const p = y * workWidth + x, coverage = semanticCoverage(semantic, x, y, workWidth, workHeight) / 255
+        workSkin[p] = Math.round(workSkin[p] * coverage)
+        if (workDodge) workDodge[p] = Math.round(workDodge[p] * coverage)
+        for (const mask of workDetailMasks) mask[p] = Math.round(mask[p] * coverage)
       }
-      if (selection && selectionStrip) {
-        selectionStrip.context.clearRect(0, 0, width, rows)
-        selectionStrip.context.drawImage(selection, 0, -y, width, height)
-        selectionAlpha = alphaChannel(selectionStrip.context.getImageData(0, 0, width, stripRows).data)
-      }
-      // Detail gates are evaluated again at original resolution. Interpolated
-      // worker deltas therefore cannot spill into pupils/iris, lips or tongue.
-      // Build feature masks per strip to avoid four full-size buffers per face.
-      const editable = new Uint8ClampedArray(union.subarray(y * width, (y + stripRows) * width))
-      const adjustment = Uint8ClampedArray.from(editable, flags => flags & 2 ? 255 : 0)
-      const achromatic = hasDodgeBurn ? Uint8ClampedArray.from(editable, flags => flags & 4 && !(flags & 8) ? 255 : 0) : null
-      for (const subject of subjects) {
-        const settings = subject.settings
-        if (settings.teethWhitening === undefined && settings.eyeWhitening === undefined && settings.lipColor === undefined && !(settings.darkCircles! > 0)) continue
-        const face: PortraitFace = {
-          ...subject.face,
-          bounds: { ...subject.face.bounds, y: (subject.face.bounds.y * height - y) / stripRows, height: subject.face.bounds.height * height / stripRows },
-          landmarks: subject.face.landmarks.map(point => ({ x: point.x, y: (point.y * height - y) / stripRows })),
+      // Overlapping face silhouettes have unknown depth. Conservatively leave
+      // their overlap alone instead of blending one person's skin into another.
+      const others = [...subjects.filter((_, index) => index !== subjectIndex).map(item => item.face), ...(options.excludedFaces ?? [])]
+      const overlappingFaces: PortraitFace[] = []
+      for (const other of others) {
+        const a = other.bounds, b = subject.face.bounds
+        if (a.x >= b.x + b.width || a.x + a.width <= b.x || a.y >= b.y + b.height || a.y + a.height <= b.y) continue
+        const localOther = faceInRegion(other, width, height, region)
+        overlappingFaces.push(localOther)
+        const smallOther = createFaceContourMask(localOther, workWidth, workHeight)
+        for (let p = 0; p < workSkin.length; p++) if (smallOther[p]) {
+          workSkin[p] = 0; if (workDodge) workDodge[p] = 0
+          for (const mask of workDetailMasks) mask[p] = 0
         }
-        const details = createFaceDetailMasks(face, width, stripRows)
-        includePortraitDetailPixels(editable, details, before.data, settings, adjustment)
       }
-      const stripChanged = mergeNaturalRetouchStrip(before.data, pixels.data, editable, delta,
-        { width, height, workWidth, workHeight, startY: y }, protectionAlpha, selectionAlpha, adjustment, achromatic)
-      if (stripChanged) { target.context.putImageData(pixels, 0, y); changed = true }
-      // Yield so cancellation and pointer/UI events can run during large exports.
-      await new Promise<void>(resolve => setTimeout(resolve, 0))
+      const delta = await runWorker({ source: workSource.buffer as ArrayBuffer, width: workWidth, height: workHeight,
+        subjects: [{ mask: workSkin.buffer as ArrayBuffer, dodgeBurnMask: workDodge?.buffer as ArrayBuffer | undefined, settings,
+          details: workDetails ? { underEyes: workDetails.underEyes.buffer as ArrayBuffer, teeth: workDetails.teeth.buffer as ArrayBuffer, eyes: workDetails.eyes.buffer as ArrayBuffer, lips: workDetails.lips.buffer as ArrayBuffer } : undefined }],
+        protection: workProtection?.buffer as ArrayBuffer | undefined }, signal)
+      work.canvas.width = work.canvas.height = 1
+      const otherSkinAdjustment = OTHER_SKIN_CONTROLS.some(key => { const value = settings[key as keyof NaturalRetouchSettings]; return typeof value === 'number' && Number.isFinite(value) && value !== 0 })
+      const rows = Math.min(128, region.height), baseStrip = make(region.width, rows)
+      const protectionStrip = protection ? make(region.width, rows) : null, selectionStrip = selection ? make(region.width, rows) : null
+      if (protectionStrip) protectionStrip.context.imageSmoothingEnabled = false
+      if (selectionStrip) selectionStrip.context.imageSmoothingEnabled = false
+      for (let localY = 0; localY < region.height; localY += rows) {
+        checkAbort(signal)
+        const stripRows = Math.min(rows, region.height - localY), globalY = region.y + localY
+        baseStrip.context.clearRect(0, 0, region.width, rows)
+        baseStrip.context.drawImage(baselineImage, region.x, globalY, region.width, stripRows, 0, 0, region.width, stripRows)
+        const before = baseStrip.context.getImageData(0, 0, region.width, stripRows), pixels = target.context.getImageData(region.x, globalY, region.width, stripRows)
+        const maskAlpha = (mask: HTMLCanvasElement | null, strip: ReturnType<typeof surface> | null) => {
+          if (!mask || !strip) return null
+          strip.context.clearRect(0, 0, region.width, rows); strip.context.drawImage(mask, -region.x, -globalY, width, height)
+          return alphaChannel(strip.context.getImageData(0, 0, region.width, stripRows).data)
+        }
+        const protectionAlpha = maskAlpha(protection, protectionStrip), selectionAlpha = maskAlpha(selection, selectionStrip)
+        // Geometry is also built in bounded strips. 32px context covers the
+        // 14px skin and 12px D&B/detail inward feathers before trimming; a
+        // close-up on a 40MP photo never allocates a full-photo mask per face.
+        const first = Math.max(0, localY - 32), end = Math.min(region.height, localY + stripRows + 32)
+        const bandRegion = { x: 0, y: first, width: region.width, height: end - first }
+        const band = faceInRegion(localFace, region.width, region.height, bandRegion)
+        const offset = (localY - first) * region.width, count = region.width * stripRows
+        const skin = createFaceSkinMask(band, region.width, end - first).subarray(offset, offset + count)
+        const dodge = hasDodgeBurn ? createFaceDodgeBurnMask(band, region.width, end - first).subarray(offset, offset + count) : null
+        const editable = new Uint8ClampedArray(region.width * stripRows)
+        for (let p = 0; p < editable.length; p++) {
+          if (skin[p]) editable[p] = otherSkinAdjustment ? 11 : 1
+          if (dodge?.[p]) editable[p] |= isDodgeBurnSkinOnly(settings) ? 6 : 2
+        }
+        const adjustment = Uint8ClampedArray.from(editable, flags => flags & 2 ? 255 : 0)
+        const achromatic = hasDodgeBurn ? Uint8ClampedArray.from(editable, flags => flags & 4 && !(flags & 8) ? 255 : 0) : null
+        if (hasDetails) {
+          const detailBand = createFaceDetailMasks(band, region.width, end - first)
+          const details = Object.fromEntries(Object.entries(detailBand).map(([key, mask]) => [key, mask.subarray(offset, offset + count)])) as PortraitDetailMasks
+          includePortraitDetailPixels(editable, details, before.data, settings, adjustment)
+        }
+        for (const other of overlappingFaces) {
+          const otherBand = faceInRegion(other, region.width, region.height, bandRegion)
+          const blocked = createFaceContourMask(otherBand, region.width, end - first).subarray(offset, offset + count)
+          for (let p = 0; p < editable.length; p++) if (blocked[p]) editable[p] = 0
+        }
+        if (semantic) for (let y = 0; y < stripRows; y++) for (let x = 0; x < region.width; x++) {
+          if (!semanticCoverage(semantic, x, localY + y, region.width, region.height)) editable[y * region.width + x] = 0
+        }
+        const stripChanged = mergeNaturalRetouchStrip(before.data, pixels.data, editable, delta,
+          { width: region.width, height: region.height, workWidth, workHeight, startY: localY }, protectionAlpha, selectionAlpha, adjustment, achromatic)
+        if (stripChanged) { target.context.putImageData(pixels, region.x, globalY); changed = true }
+        await new Promise<void>(resolve => setTimeout(resolve, 0))
+      }
+      baseStrip.canvas.width = baseStrip.canvas.height = 1
+      if (protectionStrip) protectionStrip.canvas.width = protectionStrip.canvas.height = 1
+      if (selectionStrip) selectionStrip.canvas.width = selectionStrip.canvas.height = 1
     }
     checkAbort(signal)
     return changed ? await encodePng(target.canvas, signal) : current

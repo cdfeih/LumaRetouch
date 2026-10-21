@@ -162,13 +162,20 @@ function fillPolygon(mask: Uint8ClampedArray, width: number, height: number, poi
   }
 }
 
-/** Face contour mask, with eye/brow/lip holes and inward-only feathering. */
-export function createFaceSkinMask(face: PortraitFace, width: number, height: number): Uint8ClampedArray {
+/** Geometric face silhouette only. This is not semantic skin segmentation. */
+export function createFaceContourMask(face: PortraitFace, width: number, height: number): Uint8ClampedArray {
   if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1 || width * height > 80_000_000) throw new Error('人像蒙版尺寸无效。');
   if (face.landmarks.length < 468 || !face.landmarks.every(point => Number.isFinite(point.x) && Number.isFinite(point.y))) throw new Error('人像关键点不完整，请重新识别。');
   const mask = new Uint8ClampedArray(width * height);
   const outline = polygon(face.landmarks, OVAL, width, height);
   fillPolygon(mask, width, height, outline, 255);
+  return mask;
+}
+
+/** Face contour mask, with eye/brow/lip holes and inward-only feathering. */
+export function createFaceSkinMask(face: PortraitFace, width: number, height: number): Uint8ClampedArray {
+  const mask = createFaceContourMask(face, width, height);
+  const outline = polygon(face.landmarks, OVAL, width, height);
   for (const indices of [LEFT_EYE, RIGHT_EYE]) fillPolygon(mask, width, height, polygon(face.landmarks, indices, width, height, 1.4), 0);
   for (const indices of [LEFT_BROW, RIGHT_BROW]) fillPolygon(mask, width, height, polygon(face.landmarks, indices, width, height, 1.5), 0);
   fillPolygon(mask, width, height, polygon(face.landmarks, LIPS, width, height, 1.2), 0);

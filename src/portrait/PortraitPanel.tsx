@@ -175,16 +175,17 @@ export const PortraitPanel = forwardRef<PortraitPanelHandle, Props>(function Por
         }
         if (!person.face && SHAPE_FIELDS.slice(0, 3).some(field => settings[field])) throw new Error(`${person.label}没有可见面部，无法应用面部塑形。请将面部塑形归零后继续。`);
       }
-      onBusy(true, '正在修饰肤色与皮肤细节');
+      onBusy(true, '正在本机识别皮肤并修饰细节');
       // Red pixels are excluded from analysis as well as final output. Green
       // alpha belongs only to the final warp merge, so it is never applied twice.
-      const skin = await renderNaturalRetouch(baseline.current, baseline.current, chosen.flatMap(person => person.face ? [{ face: person.face, settings: parametersRef.current[person.id] || common }] : []), { protection, signal: controller.signal });
-      onBusy(true, '正在应用人像参数与保护范围');
       const chosenIds = new Set(chosen.map(person => person.id));
+      const excludedFaces = detectedPeople.filter(person => !chosenIds.has(person.id) && person.face).map(person => person.face!);
+      const skin = await renderNaturalRetouch(baseline.current, baseline.current, chosen.flatMap(person => person.face ? [{ face: person.face, settings: parametersRef.current[person.id] || common }] : []), { protection, excludedFaces, signal: controller.signal });
+      onBusy(true, '正在应用人像参数与保护范围');
       const image = await renderPortraitWarp(skin, source, chosen.map(person => ({ face: person.face, body: person.body, settings: shapeOf(parametersRef.current[person.id] || common), previousSettings: deformationHistory.current[person.id] || ZERO_SHAPE })), {
         protection, selection, signal: controller.signal, blendBaseline: baseline.current,
         excludedBodies: detectedPeople.filter(person => !chosenIds.has(person.id) && person.body).map(person => person.body!),
-        excludedFaces: detectedPeople.filter(person => !chosenIds.has(person.id) && person.face).map(person => person.face!),
+        excludedFaces,
       });
       if (controller.signal.aborted) throw new DOMException('已取消', 'AbortError');
       if (image === source) { notify('没有可应用的变化。可检查参数、绿色选区或红色保护区。'); return; }
@@ -226,7 +227,7 @@ export const PortraitPanel = forwardRef<PortraitPanelHandle, Props>(function Por
   const bodyCount = targets.filter(person => person.body).length;
 
   return <div className="portrait-panel" hidden={!active}>
-    <div className="portrait-local-note"><Check size={15} /><span>本地 AI 定位 · 不需要 API Key<br /><small>自然精修默认保持轮廓；塑形与五官细节由你主动开启。</small></span></div>
+    <div className="portrait-local-note"><Check size={15} /><span>本地 AI 定位与皮肤保护 · 不需要 API Key<br /><small>按脸读取原片，辅助避开头发、饰物与不确定区；遮挡处请复核，塑形和五官细节需主动开启。</small></span></div>
     <div className="portrait-section-tabs" role="tablist" aria-label="人像精修分类">
       {PORTRAIT_SECTIONS.map(item => <button role="tab" key={item.id} data-testid={`portrait-section-${item.id}`} aria-selected={section === item.id} aria-controls={`portrait-controls-${item.id}`} disabled={disabled} className={section === item.id ? 'selected' : ''} onClick={() => pickSection(item.id)}>{item.label}</button>)}
     </div>

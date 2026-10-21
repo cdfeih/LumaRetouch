@@ -21,7 +21,7 @@ try {
   await page.goto(baseUrl)
   const report = await page.evaluate(async () => {
     const { renderNaturalRetouch } = await import('/src/portrait/render.ts')
-    const { createFaceSkinMask } = await import('/src/portrait/detection.ts')
+    const { createFaceContourMask, createFaceSkinMask } = await import('/src/portrait/detection.ts')
     const ZERO = { smoothing: 0, blemish: 0, evenness: 0, brightening: 0, shine: 0 }
     const OVAL = [10,338,297,332,284,251,389,356,454,323,361,288,397,365,379,378,400,377,152,148,176,149,150,136,172,58,132,93,234,127,162,21,54,103,67,109]
     const LE = [33,7,163,144,145,153,154,155,133,173,157,158,159,160,161,246]
@@ -71,7 +71,7 @@ try {
     const selection = canvas(500, 300)
     selection.context.fillStyle = '#fff'; selection.context.fillRect(250, 150, 250, 150)
     const started = performance.now()
-    const rendered = await renderNaturalRetouch(baseline, current, [{ face: targetFace, settings: { ...ZERO, brightening: 100 } }], { protection: protection.element, selection: selection.element })
+    const rendered = await renderNaturalRetouch(baseline, current, [{ face: targetFace, settings: { ...ZERO, brightening: 100 } }], { protection: protection.element, selection: selection.element, skinProtection: 'geometry' })
     const elapsedMs = Math.round(performance.now() - started)
     const result = await pixels(rendered), original = await pixels(current)
     const p = canvas(width, height); p.context.imageSmoothingEnabled = false; p.context.drawImage(protection.element, 0, 0, width, height)
@@ -94,17 +94,35 @@ try {
       const expected = mask[pixel] > 0 ? [170, 130, 110, 255] : [20, 40, 60, 255]
       if (expected.some((value, channel) => zero.data[pixel * 4 + channel] !== value)) zeroRestoreMismatch++
     }
-    const fullyProtected = await renderNaturalRetouch(baseline, current, [{ face: targetFace, settings: { ...ZERO, brightening: 100 } }], { protection: canvas(10, 10, '#fff').element })
+    const fullyProtected = await renderNaturalRetouch(baseline, current, [{ face: targetFace, settings: { ...ZERO, brightening: 100 } }], { protection: canvas(10, 10, '#fff').element, skinProtection: 'geometry' })
+    const together = await pixels(await renderNaturalRetouch(baseline, baseline, [
+      { face: targetFace, settings: { ...ZERO, brightening: 100 } }, { face: otherFace, settings: ZERO },
+    ], { skinProtection: 'geometry' }))
+    let independentChanged = 0, unconfiguredPersonChanged = 0
+    for (let p = 0; p < mask.length; p++) {
+      const changed = [170,130,110,255].some((v, c) => together.data[p * 4 + c] !== v)
+      if (changed && mask[p]) independentChanged++
+      if (changed && other[p]) unconfiguredPersonChanged++
+    }
+    const overlappingFace = face(0.60), overlap = createFaceContourMask(overlappingFace, width, height)
+    const excluded = await pixels(await renderNaturalRetouch(baseline, baseline, [{ face: targetFace, settings: { ...ZERO, brightening: 100 } }], { excludedFaces: [overlappingFace], skinProtection: 'geometry' }))
+    let overlapChanged = 0, outsideOverlapChanged = 0
+    for (let p = 0; p < mask.length; p++) {
+      const changed = [170,130,110,255].some((v, c) => excluded.data[p * 4 + c] !== v)
+      if (changed && overlap[p]) overlapChanged++
+      if (changed && !overlap[p]) outsideOverlapChanged++
+    }
     const aborted = new AbortController(); aborted.abort()
     let cancel = ''
     try { await renderNaturalRetouch(baseline, current, [{ face: targetFace, settings: ZERO }], { signal: aborted.signal }) } catch (error) { cancel = error.name }
     let badDimensions = false
     try { await renderNaturalRetouch(baseline, canvas(20, 20, '#fff').element.toDataURL(), [{ face: targetFace, settings: ZERO }]) } catch (error) { badDimensions = error.message.includes('尺寸不一致') }
-    return { width: result.width, height: result.height, elapsedMs, protectedCount, protectedChanged, excludedChanged, otherPersonChanged, greenOutsideChanged, editableChanged, zeroRestoreMismatch, fullyProtectedUnchanged: fullyProtected === current, cancel, badDimensions }
+    return { width: result.width, height: result.height, elapsedMs, protectedCount, protectedChanged, excludedChanged, otherPersonChanged, greenOutsideChanged, editableChanged, zeroRestoreMismatch, independentChanged, unconfiguredPersonChanged, overlapChanged, outsideOverlapChanged, fullyProtectedUnchanged: fullyProtected === current, cancel, badDimensions }
   })
   assert.equal(report.width, 2000); assert.equal(report.height, 1200)
   assert.ok(report.protectedCount > 1000); assert.ok(report.editableChanged > 10000)
-  for (const key of ['protectedChanged', 'excludedChanged', 'otherPersonChanged', 'greenOutsideChanged', 'zeroRestoreMismatch']) assert.equal(report[key], 0, key)
+  for (const key of ['protectedChanged', 'excludedChanged', 'otherPersonChanged', 'greenOutsideChanged', 'zeroRestoreMismatch', 'unconfiguredPersonChanged', 'overlapChanged']) assert.equal(report[key], 0, key)
+  assert.ok(report.independentChanged > 1000); assert.ok(report.outsideOverlapChanged > 1000)
   assert.equal(report.fullyProtectedUnchanged, true); assert.equal(report.cancel, 'AbortError'); assert.equal(report.badDimensions, true)
   assert.ok(workers >= 3)
   const abortDuringWorker = new Promise((resolve, reject) => {
@@ -120,7 +138,7 @@ try {
     try {
       await renderNaturalRetouch(fixture.baseline, fixture.current, [{ face: fixture.face, settings: {
         smoothing: 100, blemish: 100, evenness: 100, brightening: 100, shine: 100,
-      } }], { signal: controller.signal })
+      } }], { signal: controller.signal, skinProtection: 'geometry' })
       return 'completed'
     } catch (error) { return error.name }
   })
