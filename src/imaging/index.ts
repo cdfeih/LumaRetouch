@@ -6,9 +6,18 @@ import {
 } from './pixels'
 import type { Adjustments } from './pixels'
 import { protectionTransitionCoverage, protectionTransitionRadius } from './protection'
+import { adjustAdvancedPixelBuffer, hasAdvancedColor } from './color'
+import type { AdvancedColorSettings } from './color'
+import { planPhotoTransform } from './geometry'
+import type { PhotoTransform } from './geometry'
+import { decodeRaw, isRawFile } from '../raw'
+import type { RawDecodeOptions, RawMetadata } from '../raw'
 
 export { DEFAULT_ADJUSTMENTS } from './pixels'
 export type { Adjustments } from './pixels'
+export { DEFAULT_ADVANCED_COLOR, HSL_BANDS, normalizeAdvancedColor, hasAdvancedColor } from './color'
+export type { AdvancedColorSettings, HslBand, HslAdjustment, CurvePoint } from './color'
+export type { PhotoTransform } from './geometry'
 
 export const MAX_FILE_BYTES = 30 * 1024 * 1024
 export const MAX_PHOTO_PIXELS = 40_000_000
@@ -20,6 +29,8 @@ export interface LoadedPhoto {
   height: number
   name: string
   mimeType: string
+  raw?: RawMetadata
+  warnings?: string[]
 }
 
 interface DecodedImage {
@@ -96,7 +107,7 @@ async function decode(source: Blob | string): Promise<DecodedImage> {
   }
 }
 
-function readDataUrl(file: File): Promise<string> {
+function readDataUrl(file: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader()
     reader.onload = () => resolve(reader.result as string)
@@ -122,12 +133,16 @@ export function dataUrlBase64(dataUrl: string): string {
 }
 
 /** Retain the compressed original; editing always happens on a separate canvas. */
-export async function loadPhoto(file: File): Promise<LoadedPhoto> {
+export async function loadPhoto(file: File, options: RawDecodeOptions = {}): Promise<LoadedPhoto> {
   if (file.size === 0) throw new Error('照片文件为空。')
-  if (file.size > MAX_FILE_BYTES) throw new Error('单张照片不能超过 30 MB，请先压缩或缩小照片。')
-  if (/\.(?:rw2|raw|dng|arw|cr2|cr3|nef|orf|raf)$/i.test(file.name)) {
-    throw new Error('暂不支持 RAW，请在相机或电脑中导出 JPEG、PNG 或 WebP。')
+  if (isRawFile(file)) {
+    const result = await decodeRaw(file, options)
+    assertSize(result.metadata.width, result.metadata.height)
+    return { dataUrl: await readDataUrl(result.blob), width: result.metadata.width, height: result.metadata.height,
+      name: file.name, mimeType: 'image/png', raw: result.metadata,
+      warnings: ['RAW 已在本机完整解码并转为 8bit sRGB 编辑图；后续调色不是 16bit RAW 工作流，不保留相机原始色彩配置或全部 EXIF。'] }
   }
+  if (file.size > MAX_FILE_BYTES) throw new Error('单张照片不能超过 30 MB，请先压缩或缩小照片。')
   if (file.type && !file.type.startsWith('image/')) throw new Error('请选择照片文件。')
   const image = await decode(file)
   let dimensions: { width: number; height: number }
@@ -291,7 +306,7 @@ export async function composeEdit(
   }
 }
 
-export async function applyAdjustments(dataUrl: string, adjustments: Adjustments): Promise<string> {
+export async function applyAdjustments(dataUrl: string, adjustments: Adjustments, advanced?: AdvancedColorSettings): Promise<string> {
   const image = await decode(dataUrl)
   let target: ReturnType<typeof canvas>
   try {
@@ -305,9 +320,27 @@ export async function applyAdjustments(dataUrl: string, adjustments: Adjustments
     const rows = Math.min(256, target.canvas.height - y)
     const pixels = target.context.getImageData(0, y, target.canvas.width, rows)
     adjustPixelBuffer(pixels.data, adjustments, pixels.data)
+    if (advanced && hasAdvancedColor(advanced)) adjustAdvancedPixelBuffer(pixels.data, advanced, pixels.data)
     target.context.putImageData(pixels, 0, y)
   }
   return toDataUrl(target.canvas)
+}
+
+/** Destructive to this returned snapshot only; the caller retains undo/original history. */
+export async function transformPhoto(dataUrl: string, transform: PhotoTransform): Promise<{ dataUrl: string; width: number; height: number }> {
+  const image = await decode(dataUrl)
+  let target: ReturnType<typeof canvas> | undefined
+  try {
+    assertSize(image.width, image.height)
+    const plan = planPhotoTransform(image.width, image.height, transform)
+    target = canvas(plan.width, plan.height)
+    target.context.translate(plan.width / 2, plan.height / 2)
+    target.context.rotate(plan.rotation * Math.PI / 180)
+    target.context.scale(plan.flipHorizontal ? -1 : 1, plan.flipVertical ? -1 : 1)
+    target.context.drawImage(image.image, plan.x, plan.y, plan.sourceWidth, plan.sourceHeight,
+      -plan.sourceWidth / 2, -plan.sourceHeight / 2, plan.sourceWidth, plan.sourceHeight)
+    return { dataUrl: toDataUrl(target.canvas), width: plan.width, height: plan.height }
+  } finally { image.release(); if (target) target.canvas.width = target.canvas.height = 1 }
 }
 
 export async function encodeExport(dataUrl: string, format: 'jpeg' | 'png', quality = 0.94): Promise<{

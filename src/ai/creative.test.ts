@@ -3,6 +3,12 @@ import { buildCreativePrompt, buildRetouchPrompt, SKY_PRESETS, STYLE_PRESETS } f
 import type { RetouchTool } from './index';
 
 describe('创意编辑输入约束', () => {
+  it('一句话点修必须有实际选区和要求，限制专项修饰范围与五官变动', () => {
+    expect(() => buildCreativePrompt({ tool: 'point', strength: 45, customPrompt: '衣服祛褶皱' })).toThrow('先点击');
+    expect(() => buildCreativePrompt({ tool: 'point', strength: 45, hasSelection: true })).toThrow('再描述');
+    const prompt = buildCreativePrompt({ tool: 'point', strength: 45, hasSelection: true, customPrompt: '减轻衣服褶皱' });
+    expect(prompt).toContain('专项修饰'); expect(prompt).toContain('不重绘整张脸'); expect(prompt).toContain('选区外所有像素必须保持原样');
+  });
   it('添加内容只强制具体描述，去物仍须选区，追色仍须参考图', () => {
     expect(() => buildCreativePrompt({ tool: 'add', strength: 50, customPrompt: '一只橘猫' })).not.toThrow();
     expect(() => buildCreativePrompt({ tool: 'add', strength: 50, customPrompt: ' \n ' })).toThrow('描述');

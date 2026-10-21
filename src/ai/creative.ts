@@ -56,11 +56,13 @@ export function buildCreativePrompt(input: CreativePromptInput): string {
   const amount = Math.round(Math.max(0, Math.min(100, Number.isFinite(input.strength) ? input.strength : 40)));
   if (tool === 'remove' && !hasSelection) throw new RetouchError('INPUT', '先涂抹要移除的物体。');
   if (tool === 'add' && !custom) throw new RetouchError('INPUT', '请描述希望添加什么内容。');
+  if (tool === 'point' && (!hasSelection || !custom)) throw new RetouchError('INPUT', '先点击照片选择点修区域，再描述修改要求。');
   if (tool === 'match' && !hasReference) throw new RetouchError('INPUT', '请先导入用于追色的风格参考图。');
   const identity = '请只返回第 1 张待修图片的编辑结果。保持原始人物身份、五官比例、脸型、年龄、表情、姿势、服装、主体关系、构图和画幅，不裁剪或移动画面。';
   let task: string;
   let renderGuard = '保持自然摄影质感与真实纹理，避免蜡像感或不必要的重绘。';
   switch (tool) {
+    case 'point': task = '对用户点选的小范围做专项修饰，准确执行补充要求：可处理局部汗渍、衣物褶皱或零碎头发。仅编辑蒙版内确需修饰的像素，以附近真实材质、纹理、光线自然修复。不重绘整张脸，不改变眼睛、嘴、脸型、肢体轮廓、身份或表情；不要新增无关内容，不将蒙版或文字画入照片。选区不足以完成时保留原内容，不擅自扩大改动范围。'; break;
     case 'smooth': task = '对人物皮肤做自然磨皮：减轻皮肤粗糙和局部肤色不匀，保留毛孔、细小纹理和自然明暗。避免蜡像感、塑料感及过度美白。只编辑皮肤，不修改眼睛、眉毛、嘴唇、头发、衣物和背景。'; break;
     case 'blemish': task = '识别并清除临时痘痘、小面积泛红和明显的小瑕疵，使用周围真实皮肤纹理自然修复。保留正常毛孔、雀斑、痣、胎记及身份特征，不做全脸模糊。'; break;
     case 'remove': task = '只移除用户涂抹选区（mask）内的目标物体，以相邻背景、纹理、光线和透视补全空缺。严格保护选区外所有内容；不要增加新主体，不把遮罩图或涂抹标记画入结果。'; break;

@@ -11,6 +11,8 @@ import type { ShapeSettings } from './warp';
 import { deletePortraitPreset, loadPortraitPresets, PRESET_STORAGE_KEY, savePortraitPreset } from './presets';
 import { BODY_FIELDS, DEFAULT_PORTRAIT_SETTINGS, equalPortraitSettings, normalizePortraitSettings, PORTRAIT_FIELDS, PORTRAIT_SECTIONS, SHAPE_FIELDS, ZERO_PORTRAIT_SETTINGS } from './settings';
 import type { PortraitSection, PortraitSettings } from './settings';
+import { clonePortraitSession } from './session';
+export { clonePortraitSession } from './session';
 
 export interface PortraitPanelHandle { apply(): Promise<void>; cancel(): void; getSettings(): PortraitSettings; getSnapshot(): PortraitSessionSnapshot }
 export interface PortraitSessionSnapshot {
@@ -98,8 +100,8 @@ export const PortraitPanel = forwardRef<PortraitPanelHandle, Props>(function Por
     detectedFaces: detectedFaces.current, detectedBodies: detectedBodies.current,
     deformationHistory: deformationHistory.current, baseline: baseline.current, knownSources: [...knownSources.current] });
   sessionSnapshot.current = snapshot();
-  useEffect(() => { if (sessionSnapshot.current) props.onSessionChange?.(structuredClone(sessionSnapshot.current)); });
-  useEffect(() => () => { if (sessionSnapshot.current) props.onSessionChange?.(structuredClone(sessionSnapshot.current)); }, []);
+  useEffect(() => { if (sessionSnapshot.current) props.onSessionChange?.(clonePortraitSession(sessionSnapshot.current)); });
+  useEffect(() => () => { if (sessionSnapshot.current) props.onSessionChange?.(clonePortraitSession(sessionSnapshot.current)); }, []);
   useEffect(() => { if (active) onFacesChange(people, selected); }, [active, people, selected, onFacesChange]);
 
   function storeParameters(next: Record<string, PortraitSettings>) { parametersRef.current = next; setParameters(next); }
@@ -108,7 +110,7 @@ export const PortraitPanel = forwardRef<PortraitPanelHandle, Props>(function Por
     if (restore && restoredRevision.current !== restore.revision) {
       restoredRevision.current = restore.revision;
       job.current?.abort();
-      const saved = restore.snapshot ? structuredClone(restore.snapshot) : null;
+      const saved = restore.snapshot ? clonePortraitSession(restore.snapshot) : null;
       baseline.current = saved?.baseline ?? source;
       knownSources.current = new Set(saved?.knownSources ?? [source]);
       detectedFaces.current = saved?.detectedFaces ?? null;
@@ -205,7 +207,7 @@ export const PortraitPanel = forwardRef<PortraitPanelHandle, Props>(function Por
       else notify(error instanceof Error ? error.message : '本地人像处理失败，请重试。', true);
     } finally { job.current = null; onBusy(false); }
   }
-  useImperativeHandle(ref, () => ({ apply: () => perform(true), cancel: () => job.current?.abort(), getSettings: () => ({ ...referenceSettings }), getSnapshot: () => structuredClone(snapshot()) }));
+  useImperativeHandle(ref, () => ({ apply: () => perform(true), cancel: () => job.current?.abort(), getSettings: () => ({ ...referenceSettings }), getSnapshot: () => clonePortraitSession(snapshot()) }));
 
   function changeSettings(settings: Partial<PortraitSettings>) {
     if (selected === 'all') {

@@ -26,7 +26,7 @@ export interface ProviderConfig {
   model: string;
 }
 
-export type RetouchTool = 'smooth' | 'blemish' | 'remove' | 'sky' | 'people' | 'add' | 'style' | 'match';
+export type RetouchTool = 'smooth' | 'blemish' | 'remove' | 'sky' | 'people' | 'add' | 'style' | 'match' | 'point';
 
 export interface EditImageInput {
   provider: ProviderConfig;

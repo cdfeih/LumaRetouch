@@ -14,6 +14,7 @@ export interface EditorDocument {
   width: number; height: number; comparison?: string;
   history: EditRevision[]; future: EditRevision[]; edits: number;
   exportedCurrent?: string;
+  sourceInfo?: string;
 }
 
 export function revisionOf(document: EditorDocument, portrait: PortraitSessionSnapshot | null): EditRevision {

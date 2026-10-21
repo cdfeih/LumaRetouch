@@ -1,0 +1,15 @@
+{
+  "wrapperPackage": "@colorhythm/libraw-wasm",
+  "wrapperVersion": "1.1.1",
+  "wrapperSourceRevision": "9b0f59a5e0f6d3d12a8f6fa594015ef4f30a6e95",
+  "librawVersion": "0.22.1-Release",
+  "librawSourceRevision": "b860248a89d9082b8e0a1e202e516f46af9adb29",
+  "librawLicenseChoice": "CDDL-1.0",
+  "wasmBytes": 853083,
+  "wasmSha256": "c4cb97a7e4372da41a1ff6ec6e1146f38deb125b733b8bbb2e9c52727953aba8",
+  "sourceArchive": "LibRaw-b860248a-source.tar.gz",
+  "sourceSha256": "f5da1e522ea195b54b30f3ff105ef2193daa04ea165dea825b4d6fe9d886395b",
+  "output": "8bit-srgb",
+  "source": "sensor-demosaic",
+  "modifiedUpstreamSources": false
+}

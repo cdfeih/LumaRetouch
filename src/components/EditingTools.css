@@ -1,0 +1,19 @@
+.advanced-color details { margin:18px 0; padding-top:12px; border-top:1px solid #3a4b30; }
+.advanced-color summary { cursor:pointer; font-size:12px; margin-bottom:16px; color:#c7dcb7; }
+.advanced-color summary small { font-size:10px; color:#879d75; margin-left:6px; }
+.hsl-bands { display:flex; gap:8px; margin:12px 0 24px; }
+.hsl-bands button { width:23px; height:23px; border-radius:50%; border:2px solid transparent; }
+.hsl-bands button[aria-pressed=true] { outline:2px solid #d0e8bd; outline-offset:3px; }
+.curve-preview { background:linear-gradient(0deg,#273320,#273320); border:1px solid #425239; width:100%; height:120px; margin-bottom:18px; }
+.editing-inline-actions { display:flex; flex-wrap:wrap; gap:7px; margin:12px 0; }
+.editing-inline-actions button, .editing-reset { background:#26361d; color:#b9cfa9; border:1px solid #425934; border-radius:5px; padding:9px 11px; font-size:11px; }
+.editing-reset { display:block; width:100%; margin-top:10px; }
+.crop-modal { width:740px; }
+.crop-frame { position:relative; overflow:hidden; touch-action:none; width:100%; cursor:crosshair; user-select:none; margin:0 auto; }
+.crop-frame img { width:100%; height:100%; display:block; pointer-events:none; }
+.crop-region { position:absolute; border:1px solid #efffdc; box-shadow:0 0 0 2000px #0008; pointer-events:none; background:linear-gradient(90deg,transparent 33%,#fff5 33%,#fff5 33.3%,transparent 33.3%,transparent 66%,#fff5 66%,#fff5 66.3%,transparent 66.3%),linear-gradient(0deg,transparent 33%,#fff5 33%,#fff5 33.3%,transparent 33.3%,transparent 66%,#fff5 66%,#fff5 66.3%,transparent 66.3%); }
+.crop-modal > p { font-size:12px; color:#aec199; }
+.point-mode-options { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:16px; }
+.point-mode-options button { padding:9px 10px; border:1px solid #425934; background:#26361d; color:#b9cfa9; border-radius:5px; font-size:11px; }
+.point-mode-options button[aria-pressed=true] { color:#def2cd; background:#3a532a; border-color:#a7c68d; }
+.sample-point { position:absolute; transform:translate(-50%,-50%); z-index:5; border:1px solid #c9e6ff; color:#e3f2ff; padding:4px; background:#173a6bc9; border-radius:50%; font-size:9px; pointer-events:none; }

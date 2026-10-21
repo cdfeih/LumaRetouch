@@ -4,7 +4,11 @@ import { ArrowDownToLine, ArrowUpRight, Brush, Check, ChevronDown, CircleHelp, C
 import { DEFAULT_PROVIDERS, SKY_PRESETS, STYLE_PRESETS, buildCreativePrompt, editImage } from './ai';
 import { cloudResultBlend } from './ai/blend';
 import type { RetouchTool } from './ai';
-import { applyAdjustments, composeEdit, createMaskPayload, createProtectionPayload, encodeExport, loadPhoto, resizeForModel } from './imaging';
+import { applyAdjustments, composeEdit, createMaskPayload, createProtectionPayload, encodeExport, loadPhoto, resizeForModel, transformPhoto } from './imaging';
+import type { AdvancedColorSettings } from './imaging/color';
+import type { PhotoTransform } from './imaging/geometry';
+import { ColorTools } from './components/ColorTools';
+import { GeometryTools } from './components/GeometryTools';
 import { hasMaskSelection } from './imaging/pixels';
 import { exportImage, platformName, request } from './platform';
 import { SETTINGS_KEY, loadProviderKind, loadProviderSettings, saveProviderSettings } from './settings';
@@ -18,6 +22,8 @@ import { BatchStudio } from './batch/BatchStudio';
 import { PhotoHealth } from './components/PhotoHealth';
 import { revisionOf, restoreRevision } from './editor/history';
 import type { EditorDocument } from './editor/history';
+import { loadProjectDraft, saveProjectDraft } from './editor/project';
+import type { SavedMasks } from './editor/project';
 
 type Tool = RetouchTool | 'natural';
 type AiResultReview = { source: string; raw: string; selected: string; full?: string; mode: 'selection' | 'full'; protection: HTMLCanvasElement | null };
@@ -26,6 +32,7 @@ type Adjustments = { exposure: number; contrast: number; saturation: number; tem
 const ZERO_ADJUSTMENTS: Adjustments = { exposure: 0, contrast: 0, saturation: 0, temperature: 0, tint: 0 };
 const TOOLS = [
   { id: 'natural' as const, name: '人像精修', en: 'PORTRAIT STUDIO', icon: WandSparkles, description: '自然精修、肤色、面部与身体塑形，按人物独立控制。所有调整在本机完成。', tip: '默认采用轻柔自然精修；塑形和五官细节需主动开启，红色保护区始终优先。' },
+  { id: 'point' as const, name: '局部点修', en: 'SPOT & REPAIR', icon: Brush, description: '小瑕疵本地取样修补；复杂衣物、头发等可点选后描述，交给云端图像模型处理。', tip: '先放大到 100% 再点击瑕疵。跨过五官或发际线时缩小范围，或选择供样修补。' },
   { id: 'smooth' as const, name: '质感磨皮', en: 'SKIN RETOUCH', icon: ScanFace, description: '柔化皮肤瑕疵，尽量保留毛孔与自然纹理。', tip: '保留五官、脸型、肤色与原有光影。' },
   { id: 'blemish' as const, name: '智能祛痘', en: 'BLEMISH REMOVAL', icon: Sparkles, description: '清理痘痘与临时瑕疵，保留皮肤真实细节。', tip: '默认保留痣、雀斑及人物辨识特征。' },
   { id: 'remove' as const, name: '涂抹去物', en: 'OBJECT REMOVAL', icon: Eraser, description: '涂过不需要的物体，让 AI 补全背景。', tip: '覆盖完整物体并留少量边缘，通常更容易衔接自然。' },
@@ -46,6 +53,11 @@ export default function App() {
   const [tool, setTool] = useState<Tool>('natural');
   const [strength, setStrength] = useState(45);
   const [brushSize, setBrushSize] = useState(38);
+  const [pointMode, setPointMode] = useState<'spot' | 'clone' | 'instruction'>('spot');
+  const [pointRadius, setPointRadius] = useState(16);
+  const [pointTarget, setPointTarget] = useState<{ x: number; y: number } | null>(null);
+  const [samplePoint, setSamplePoint] = useState<{ x: number; y: number } | null>(null);
+  const [choosingSample, setChoosingSample] = useState(false);
   const [brushMode, setBrushMode] = useState<'paint' | 'protect' | 'erase' | 'pan'>('pan');
   const [maskTarget, setMaskTarget] = useState<'edit' | 'protect'>('edit');
   const [hasSelection, setHasSelection] = useState(false);
@@ -82,6 +94,10 @@ export default function App() {
   const [elapsed, setElapsed] = useState(0);
   const [toast, setToast] = useState<{ text: string; error: boolean } | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [projectReady, setProjectReady] = useState(false);
+  const [draftStatus, setDraftStatus] = useState<'loading' | 'pending' | 'saving' | 'saved' | 'error'>('loading');
+  const [draftError, setDraftError] = useState('');
+  const [draftTick, setDraftTick] = useState(0);
   const inputRef = useRef<HTMLInputElement>(null);
   const referenceInputRef = useRef<HTMLInputElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -96,11 +112,20 @@ export default function App() {
   const revisionSessions = useRef(new Map<string, Map<string, PortraitSessionSnapshot>>());
   const [portraitRestore, setPortraitRestore] = useState<{ documentId: string; revision: number; snapshot: PortraitSessionSnapshot | null }>();
   const removedPortraitDocuments = useRef(new Set<string>());
+  const maskLayers = useRef(new Map<string, SavedMasks>());
+  const maskRestoreEpoch = useRef(0);
+  const maskRestorePending = useRef(false);
+  const sessionFingerprints = useRef(new Map<string, string>());
+  const projectState = useRef({ documents, activeId });
+  projectState.current = { documents, activeId };
+  const saveChain = useRef(Promise.resolve());
+  const draftEpoch = useRef(0);
+  const projectLoadFailed = useRef(false);
   const doc = documents.find(item => item.id === activeId);
   const activeTool = TOOLS.find(item => item.id === tool)!;
   const activeStyle = STYLE_PRESETS.find(item => item.id === styleId) || STYLE_PRESETS[0];
   const activeSky = SKY_PRESETS.find(item => item.id === skyId) || SKY_PRESETS[0];
-  const needsSelection = tool === 'remove';
+  const needsSelection = tool === 'remove' || tool === 'point';
   const usesReference = (tool === 'match' || tool === 'style') && Boolean(reference);
   const provider = configs[providerKind];
   const fittedScale = doc ? Math.min((stageSize.width - 72) / doc.width, (stageSize.height - 64) / doc.height, 1) : 1;
@@ -116,8 +141,37 @@ export default function App() {
   const handleBatchBusy = useCallback((value: boolean, label?: string) => { setBusy(value); if (label) setBusyLabel(label); }, []);
   const openBatch = () => { setBatchSettings(portraitRef.current?.getSettings() ?? { ...DEFAULT_PORTRAIT_SETTINGS }); setBatchOpen(true); };
   useEffect(() => {
+    let active = true;
+    void loadProjectDraft().then(saved => {
+      if (!active || !saved) return;
+      for (const [id, snapshot] of Object.entries(saved.sessions)) portraitSessions.current.set(id, snapshot);
+      for (const [id, layers] of Object.entries(saved.masks)) maskLayers.current.set(id, layers);
+      for (const item of saved.documents) {
+        const revisions = new Map<string, PortraitSessionSnapshot>();
+        for (const revision of [...item.history, ...item.future]) if (revision.portrait) revisions.set(revision.image, revision.portrait);
+        if (saved.sessions[item.id]) revisions.set(item.current, saved.sessions[item.id]);
+        revisionSessions.current.set(item.id, revisions);
+      }
+      setDocuments(saved.documents); setActiveId(saved.documents.some(item => item.id === saved.activeId) ? saved.activeId : saved.documents[0]?.id || '');
+      if (saved.documents.length) notify(`已从本机恢复 ${saved.documents.length} 张照片、编辑历史和人像参数。`);
+    }).catch(error => { if (active) { projectLoadFailed.current = true; setDraftError(error instanceof Error ? error.message : '工程恢复失败'); setDraftStatus('error'); } })
+      .finally(() => { if (active) { setProjectReady(true); setDraftStatus(previous => previous === 'error' ? previous : 'saved'); } });
+    return () => { active = false; };
+  }, [notify]);
+  useEffect(() => {
+    if (!projectReady || (projectLoadFailed.current && !documents.length)) return;
+    const epoch = ++draftEpoch.current;
+    setDraftStatus('pending');
+    const timer = setTimeout(() => void persistDraft(epoch), 900);
+    return () => clearTimeout(timer);
+  }, [documents, activeId, draftTick, projectReady]);
+  useEffect(() => {
     const ids = new Set(documents.map(item => item.id));
     for (const id of portraitSessions.current.keys()) if (!ids.has(id)) portraitSessions.current.delete(id);
+    for (const item of documents) {
+      const allowed = new Set([item.current, ...item.history.map(revision => revision.image), ...item.future.map(revision => revision.image)]);
+      for (const image of revisionSessions.current.get(item.id)?.keys() ?? []) if (!allowed.has(image)) revisionSessions.current.get(item.id)?.delete(image);
+    }
   }, [documents]);
   useEffect(() => {
     if (!hasUnsavedEdits && !busy) return;
@@ -161,6 +215,8 @@ export default function App() {
     return () => clearInterval(timer);
   }, [busy]);
   useEffect(() => {
+    const restoreEpoch = ++maskRestoreEpoch.current;
+    maskRestorePending.current = false;
     const canvas = maskRef.current;
     if (!canvas || !doc) { setHasSelection(false); setHasProtection(false); return; }
     const ratio = Math.min(2048 / Math.max(doc.width, doc.height), 1);
@@ -179,11 +235,23 @@ export default function App() {
     setZoom(1);
     setCompare(false);
     setAdjustments(ZERO_ADJUSTMENTS);
+    setPointTarget(null); setSamplePoint(null); setChoosingSample(false);
+    setPointRadius(previous => Math.min(previous, Math.max(2, Math.min(128, Math.floor(.12 * Math.min(doc.width, doc.height))))));
+    const layers = maskLayers.current.get(activeId);
+    if (layers) {
+      const id = activeId;
+      maskRestorePending.current = true;
+      void Promise.all(([['selection', canvas], ['protection', protectionRef.current]] as const).map(async ([key, target]) => {
+        if (!target || !layers[key]) return;
+        const image = new Image(); image.src = layers[key]; await image.decode();
+        if (maskRestoreEpoch.current === restoreEpoch && projectState.current.activeId === id && target.width === Math.round(doc.width * ratio)) target.getContext('2d')?.drawImage(image, 0, 0, target.width, target.height);
+      })).then(() => { if (maskRestoreEpoch.current === restoreEpoch && projectState.current.activeId === id) { syncMaskSelection(); maskRestorePending.current = false; } }).catch(() => { if (maskRestoreEpoch.current === restoreEpoch) { maskRestorePending.current = false; notify('部分画笔记录无法恢复，请重新涂选。', true); } });
+    }
   }, [activeId, doc?.width, doc?.height]);
   useEffect(() => {
     const handle = (event: KeyboardEvent) => {
       if (event.key === 'Escape') { setSettingsOpen(false); setExportOpen(false); setGuideOpen(false); }
-      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement || settingsOpen || exportOpen || guideOpen || batchOpen || busy) return;
+      if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement || event.target instanceof HTMLSelectElement || settingsOpen || exportOpen || guideOpen || batchOpen || busy || Array.from(document.querySelectorAll('[role="dialog"]')).some(element => element.getClientRects().length > 0)) return;
       if (event.key.toLowerCase() === 'b') { setBrushMode('paint'); setMaskTarget('edit'); setCompare(false); }
       if (event.key.toLowerCase() === 'p') { setBrushMode('protect'); setMaskTarget('protect'); setShowMask(true); setCompare(false); }
       if (event.key.toLowerCase() === 'e') setBrushMode('erase');
@@ -197,18 +265,44 @@ export default function App() {
     const canvas = maskRef.current;
     if (canvas) canvas.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
     setHasSelection(false);
+    setPointTarget(null);
     maskHistory.current = [];
     setMaskUndoCount(0);
+    rememberMasks();
   }
   function clearProtection() {
     const canvas = protectionRef.current;
     canvas?.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height);
     setHasProtection(false); maskHistory.current = []; setMaskUndoCount(0);
+    rememberMasks();
+  }
+  function rememberMasks() {
+    ++maskRestoreEpoch.current;
+    maskRestorePending.current = false;
+    if (!activeId || !maskRef.current || !protectionRef.current) return;
+    maskLayers.current.set(activeId, { selection: maskRef.current.toDataURL(), protection: protectionRef.current.toDataURL() });
+    setDraftTick(previous => previous + 1);
+  }
+  async function persistDraft(epoch = ++draftEpoch.current) {
+    if (epoch < draftEpoch.current) return;
+    const state = projectState.current;
+    const ids = new Set(state.documents.map(item => item.id));
+    // Transient cloud review canvases are not serializable; the accepted image and undo history are saved.
+    const rows = state.documents.map(({ aiReview: _review, ...item }) => item);
+    const saved = { version: 1 as const, activeId: state.activeId, documents: rows,
+      sessions: Object.fromEntries([...portraitSessions.current].filter(([id]) => ids.has(id))),
+      masks: Object.fromEntries([...maskLayers.current].filter(([id]) => ids.has(id))), savedAt: Date.now() };
+    setDraftStatus('saving');
+    const write = saveChain.current.catch(() => {}).then(() => saveProjectDraft(saved));
+    saveChain.current = write;
+    try { await write; if (epoch === draftEpoch.current) { setDraftStatus('saved'); setDraftError(''); } }
+    catch (error) { if (epoch === draftEpoch.current) { setDraftStatus('error'); setDraftError(error instanceof Error ? error.message : '工程自动保存失败，请及时导出。'); } }
   }
   function changeTool(next: Tool) {
     if (busy) return;
     if (next !== tool) { clearMask(); setCustomPrompt(''); }
     setTool(next); setCompare(false); setBrushMode(next === 'natural' ? 'pan' : 'paint'); setMaskTarget('edit');
+    setPointTarget(null); setSamplePoint(null); setChoosingSample(false);
   }
   async function importReference(file: File | undefined) {
     if (!file || busy) return;
@@ -217,14 +311,14 @@ export default function App() {
     catch (error) { notify(error instanceof Error ? error.message : '参考图读取失败', true); }
     finally { setBusy(false); if (referenceInputRef.current) referenceInputRef.current.value = ''; }
   }
-  function pushEdit(id: string, image: string, aiReview?: AiResultReview, preserveSelection = false) {
+  function pushEdit(id: string, image: string, aiReview?: AiResultReview, preserveSelection = false, geometry?: { width: number; height: number; comparison: string }) {
     const currentSession = preserveSelection ? portraitRef.current?.getSnapshot() : undefined;
     if (currentSession) {
       portraitSessions.current.set(id, currentSession);
       if (!revisionSessions.current.has(id)) revisionSessions.current.set(id, new Map());
       revisionSessions.current.get(id)!.set(image, currentSession);
     }
-    setDocuments(previous => previous.map(item => item.id === id ? { ...item, current: image, history: [...item.history, revisionOf(item, revisionSessions.current.get(id)?.get(item.current) ?? null)].slice(-5), future: [], edits: item.edits + 1, aiReview } : item));
+    setDocuments(previous => previous.map(item => item.id === id ? { ...item, ...geometry, current: image, history: [...item.history, revisionOf(item, revisionSessions.current.get(id)?.get(item.current) ?? null)].slice(-5), future: [], edits: item.edits + 1, aiReview } : item));
     setCompare(false);
     setShowMask(false);
     if (!preserveSelection) clearMask();
@@ -263,25 +357,27 @@ export default function App() {
     finally { setBusy(false); }
   }
   async function importFiles(files: FileList | File[] | null) {
-    if (!files || busy) return;
+    if (!files || busy || !projectReady) return;
     const available = Math.max(0, 10 - documents.length);
     if (!available) { notify('当前最多打开 10 张照片，请先移除不需要的照片。', true); return; }
     const list = Array.from(files).slice(0, available);
     if (files.length > available) notify(`本次先导入 ${available} 张照片，最多同时打开 10 张。`);
     setBusy(true); setBusyLabel('正在读取照片');
+    const controller = new AbortController(); abortRef.current = controller;
     const added: Document[] = [];
     const errors: string[] = [];
     for (const file of list) {
+      if (controller.signal.aborted) break;
       try {
-        if (file.size > 30 * 1024 * 1024) throw new Error('单张照片请控制在 30 MB 内');
-        if (!/\.(jpe?g|png|webp)$/i.test(file.name)) throw new Error('第一版支持 JPEG、PNG、WebP，请先将 RAW／RW2 导出为 JPEG');
-        const loaded = await loadPhoto(file);
-        added.push({ id: crypto.randomUUID(), name: loaded.name, original: loaded.dataUrl, current: loaded.dataUrl, width: loaded.width, height: loaded.height, history: [], future: [], edits: 0 });
+        const loaded = await loadPhoto(file, { signal: controller.signal, onProgress: setBusyLabel });
+        added.push({ id: crypto.randomUUID(), name: loaded.name, original: loaded.dataUrl, current: loaded.dataUrl, width: loaded.width, height: loaded.height, history: [], future: [], edits: 0, sourceInfo: loaded.raw ? 'RAW 已在本机完整解码为 8bit sRGB；原始 RAW 文件不修改' : undefined });
+        if (loaded.warnings?.length) notify(loaded.warnings.join('；'));
       } catch (error) { errors.push(`${file.name}：${error instanceof Error ? error.message : '读取失败'}`); }
     }
     setDocuments(previous => [...previous, ...added]);
     if (added.length) setActiveId(added[0].id);
     setBusy(false);
+    abortRef.current = null;
     if (errors.length) notify(errors.join('；'), true);
     else if (added.length) notify(`已导入 ${added.length} 张照片，原图会保留在本次会话中。`);
     if (inputRef.current) inputRef.current.value = '';
@@ -304,6 +400,17 @@ export default function App() {
   }
   function startDrawing(event: ReactPointerEvent<HTMLCanvasElement>) {
     if (busy || compare || brushMode === 'pan' || event.button !== 0) return;
+    ++maskRestoreEpoch.current;
+    if (tool === 'point' && brushMode === 'paint' && doc) {
+      event.preventDefault();
+      const center = pointOnMask(event), canvas = event.currentTarget;
+      const normalized = { x: center.x / canvas.width, y: center.y / canvas.height };
+      if (choosingSample || event.altKey) { setSamplePoint(normalized); setChoosingSample(false); notify('供样位置已设置，再点击需要修补的位置。'); return; }
+      setPointTarget(normalized); setCompare(false); setShowMask(true);
+      const context = canvas.getContext('2d');
+      if (context) { context.clearRect(0, 0, canvas.width, canvas.height); context.globalCompositeOperation = 'source-over'; context.fillStyle = 'white'; context.beginPath(); context.ellipse(center.x, center.y, pointRadius / doc.width * canvas.width, pointRadius / doc.height * canvas.height, 0, 0, Math.PI * 2); context.fill(); }
+      setHasSelection(true); rememberMasks(); return;
+    }
     event.preventDefault(); event.currentTarget.setPointerCapture(event.pointerId);
     const target = maskTarget === 'protect' ? protectionRef.current : maskRef.current;
     const context = target?.getContext('2d');
@@ -322,24 +429,36 @@ export default function App() {
   }
   function syncMaskSelection() {
     const canvas = maskRef.current, context = canvas?.getContext('2d');
-    setHasSelection(Boolean(canvas && context && hasMaskSelection(context.getImageData(0, 0, canvas.width, canvas.height).data)));
+    const selected = Boolean(canvas && context && hasMaskSelection(context.getImageData(0, 0, canvas.width, canvas.height).data));
+    setHasSelection(selected);
+    if (!selected && tool === 'point') setPointTarget(null);
     const protection = protectionRef.current, protectionContext = protection?.getContext('2d');
     setHasProtection(Boolean(protection && protectionContext && hasMaskSelection(protectionContext.getImageData(0, 0, protection.width, protection.height).data)));
+  }
+  function resizePointRadius(radius: number) {
+    setPointRadius(radius);
+    const canvas = maskRef.current, context = canvas?.getContext('2d');
+    if (!doc || !pointTarget || !canvas || !context) return;
+    context.clearRect(0, 0, canvas.width, canvas.height); context.globalCompositeOperation = 'source-over'; context.fillStyle = 'white'; context.beginPath();
+    context.ellipse(pointTarget.x * canvas.width, pointTarget.y * canvas.height, radius / doc.width * canvas.width, radius / doc.height * canvas.height, 0, 0, Math.PI * 2); context.fill(); rememberMasks();
   }
   function finishDrawing() {
     const wasDrawing = drawingRef.current;
     drawingRef.current = false; lastPointRef.current = null;
-    if (wasDrawing) syncMaskSelection();
+    if (wasDrawing) { syncMaskSelection(); rememberMasks(); }
   }
   function undoMask() {
     const entry = maskHistory.current.pop();
     const canvas = entry?.target === 'protect' ? protectionRef.current : maskRef.current;
-    if (entry && canvas) { canvas.getContext('2d')?.putImageData(entry.image, 0, 0); syncMaskSelection(); }
+    if (entry && canvas) { canvas.getContext('2d')?.putImageData(entry.image, 0, 0); syncMaskSelection(); rememberMasks(); }
     setMaskUndoCount(maskHistory.current.length);
   }
   async function runAi() {
     if (!doc || busy) return;
+    if (maskRestorePending.current) { notify('正在恢复这张照片的画笔，请稍候再开始。'); return; }
     if (tool === 'natural') { finishDrawing(); await portraitRef.current?.apply(); return; }
+    if (tool === 'point' && pointMode !== 'instruction') { await runLocalPoint(); return; }
+    if (tool === 'point' && (!hasSelection || !customPrompt.trim())) { notify('先点击照片选择区域，再填写点修要求。', true); return; }
     if (tool === 'remove' && !hasSelection) { notify('先用画笔涂过需要移除的物体，再开始去物。', true); return; }
     if (tool === 'add' && !customPrompt.trim()) { notify('请先描述要添加的内容，绿色编辑选区可以不涂。', true); return; }
     if (tool === 'match' && !reference) { notify('先上传一张喜欢的参考图，再开始追色。', true); return; }
@@ -395,11 +514,47 @@ export default function App() {
       else notify(error instanceof Error ? error.message : 'AI 处理失败，请检查模型设置与网络。', true);
     } finally { setBusy(false); abortRef.current = null; }
   }
-  async function applyColor() {
-    if (!doc || busy) return;
+  async function runLocalPoint() {
+    if (!doc || busy || !pointTarget || !hasSelection) { notify('请先点击照片上的小瑕疵，建议放大到 100% 操作。', true); return; }
+    if (pointMode === 'clone' && !samplePoint) { notify('先点“设置供样点”，再点击附近干净且纹理相似的位置。', true); return; }
+    const controller = new AbortController(); abortRef.current = controller;
+    setBusy(true); setBusyLabel('正在本地修补小瑕疵');
+    try {
+      const { repairSpot } = await import('./point-retouch');
+      // Erased portions of the visible point selection must also be excluded from local repair.
+      const lock = document.createElement('canvas');
+      lock.width = maskRef.current!.width; lock.height = maskRef.current!.height;
+      const lockContext = lock.getContext('2d');
+      if (!lockContext) throw new Error('无法创建点修保护层，本次未修改。');
+      lockContext.fillStyle = 'white'; lockContext.fillRect(0, 0, lock.width, lock.height);
+      lockContext.globalCompositeOperation = 'destination-out'; lockContext.drawImage(maskRef.current!, 0, 0);
+      lockContext.globalCompositeOperation = 'source-over';
+      if (protectionRef.current) lockContext.drawImage(protectionRef.current, 0, 0);
+      const result = await repairSpot(doc.current, { ...pointTarget, radius: pointRadius / Math.min(doc.width, doc.height), sourcePoint: pointMode === 'clone' ? samplePoint ?? undefined : undefined, protection: lock, signal: controller.signal });
+      lock.width = lock.height = 1;
+      if (controller.signal.aborted) return;
+      if (result.changed) { pushEdit(doc.id, result.dataUrl); setPointTarget(null); notify(result.warning?.includes('红色保护区') && !hasProtection ? '局部修补完成，擦除过的区域和选区外保持原样，请检查边缘。' : result.warning || '局部修补完成，其他区域保持原样，可撤销。'); }
+      else notify(result.warning || '没有可安全修补的像素，请缩小范围或指定供样点。', true);
+    } catch (error) { notify(controller.signal.aborted ? '已取消本地点修。' : error instanceof Error ? error.message : '局部修补失败', !controller.signal.aborted); }
+    finally { setBusy(false); abortRef.current = null; }
+  }
+  async function applyColor(advanced?: AdvancedColorSettings): Promise<boolean> {
+    if (!doc || busy) return false;
     setBusy(true); setBusyLabel('正在应用本地调色');
-    try { pushEdit(doc.id, await applyAdjustments(doc.current, adjustments)); setAdjustments(ZERO_ADJUSTMENTS); notify('已应用本地调色。'); }
-    catch (error) { notify(error instanceof Error ? error.message : '调色失败', true); }
+    try { pushEdit(doc.id, await applyAdjustments(doc.current, adjustments, advanced)); setAdjustments(ZERO_ADJUSTMENTS); notify('已应用本地调色，可撤销和前后对比。'); return true; }
+    catch (error) { notify(error instanceof Error ? error.message : '调色失败', true); return false; }
+    finally { setBusy(false); }
+  }
+  async function applyGeometry(transform: PhotoTransform): Promise<boolean> {
+    if (!doc || busy) return false;
+    setBusy(true); setBusyLabel('正在调整构图');
+    try {
+      const result = await transformPhoto(doc.current, transform);
+      const comparison = await transformPhoto(doc.comparison || doc.original, transform);
+      pushEdit(doc.id, result.dataUrl, undefined, false, { width: result.width, height: result.height, comparison: comparison.dataUrl });
+      clearProtection();
+      notify('构图已更新，原文件保留，可撤销恢复。画笔选区已清除。'); return true;
+    } catch (error) { notify(error instanceof Error ? error.message : '构图调整失败', true); return false; }
     finally { setBusy(false); }
   }
   async function applySuggestedExposure(exposure: number) {
@@ -429,6 +584,7 @@ export default function App() {
     if (closing && closing.edits > 0 && closing.exportedCurrent !== closing.current && !window.confirm(`“${closing.name}”还有未导出的修改。确定从工作台移除吗？请先取消并导出，避免丢失。`)) return;
     removedPortraitDocuments.current.add(id); portraitSessions.current.delete(id);
     revisionSessions.current.delete(id);
+    maskLayers.current.delete(id); sessionFingerprints.current.delete(id);
     const rest = documents.filter(item => item.id !== id);
     setDocuments(rest);
     if (id === activeId) setActiveId(rest[0]?.id || '');
@@ -446,18 +602,19 @@ export default function App() {
   }
 
   return <div className="app-shell" onDragOver={event => { event.preventDefault(); if (!busy) setDragging(true); }} onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false); }} onDrop={event => { event.preventDefault(); setDragging(false); void importFiles(event.dataTransfer.files); }}>
-    <input data-testid="photo-input" ref={inputRef} className="hidden-input" type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={(event: ChangeEvent<HTMLInputElement>) => void importFiles(event.target.files)} />
+    <input data-testid="photo-input" ref={inputRef} className="hidden-input" type="file" accept="image/jpeg,image/png,image/webp,.rw2,.dng,.nef,.nrw,.arw,.cr2,.cr3,.orf,.raf,.raw,.srw,.pef,.3fr,.iiq" multiple onChange={(event: ChangeEvent<HTMLInputElement>) => void importFiles(event.target.files)} />
     <input data-testid="reference-input" ref={referenceInputRef} className="hidden-input" type="file" accept="image/jpeg,image/png,image/webp" onChange={event => void importReference(event.target.files?.[0])} />
     <header className="topbar">
       <a href="#" className="brand" aria-label="光修 AI 首页" onClick={event => event.preventDefault()}><img src="./mark.svg" alt="" /><span>光修<span className="brand-ai">AI</span></span><span className="brand-tag">PHOTO STUDIO</span></a>
-      <div className="topbar-center"><span className="status-dot" />{platformName}<span className="topbar-version">预览版 0.2</span></div>
-      <div className="topbar-actions"><button className="icon-button settings-top" aria-label="模型设置" title="模型设置" onClick={() => setSettingsOpen(true)}><Settings2 size={18} /></button><button className="button button-quiet batch-top" data-testid="open-batch" aria-label="批量修图" onClick={openBatch} disabled={busy}><Images size={16} /><span className="batch-full-label">批量修图</span><span className="batch-short-label">批量</span></button><button className="button button-quiet import-top" aria-label="导入照片" onClick={() => inputRef.current?.click()} disabled={busy}><ImagePlus size={16} /><span>导入照片</span></button><button className="button button-primary" onClick={() => setExportOpen(true)} disabled={!doc || busy}><ArrowDownToLine size={16} />导出照片</button></div>
+      <div className="topbar-center"><span className="status-dot" />{platformName}<span className="topbar-version" title={`构建 ${__BUILD_REVISION__} · ${__BUILD_TIME__}`}>预览版 {__APP_VERSION__}</span></div>
+      <div className="topbar-actions"><button className="icon-button settings-top" aria-label="模型设置" title="模型设置" onClick={() => setSettingsOpen(true)}><Settings2 size={18} /></button><button className="button button-quiet batch-top" data-testid="open-batch" aria-label="批量修图" onClick={openBatch} disabled={busy || !projectReady}><Images size={16} /><span className="batch-full-label">批量修图</span><span className="batch-short-label">批量</span></button><button className="button button-quiet import-top" aria-label="导入照片" onClick={() => inputRef.current?.click()} disabled={busy || !projectReady}><ImagePlus size={16} /><span>导入照片</span></button><button className="button button-primary" onClick={() => setExportOpen(true)} disabled={!doc || busy || !projectReady}><ArrowDownToLine size={16} />导出照片</button></div>
     </header>
+    <div className={`project-status ${draftStatus}`} role="status"><span>{draftStatus === 'loading' ? '正在恢复本地工程…' : draftStatus === 'saved' ? '工程已自动保存到本机 · 刷新可续修' : draftStatus === 'error' ? draftError : draftStatus === 'saving' ? '正在保存本地工程…' : '工程有更新，等待自动保存…'}</span><button disabled={!projectReady || busy || draftStatus === 'saving'} onClick={() => void persistDraft()}>立即保存</button></div>
 
-    <div className="workspace">
+    <div className="workspace" inert={!projectReady}>
       <aside className="tool-sidebar">
-        <div className="section-caption">精修与创作 <span>09 TOOLS</span></div>
-        <nav className="tool-list" aria-label="精修工具">{TOOLS.map(item => <button key={item.id} data-testid={`tool-${item.id}`} className={`tool-card ${tool === item.id ? 'selected' : ''}`} disabled={busy} onClick={() => changeTool(item.id)}><span className="tool-icon"><item.icon size={21} strokeWidth={1.6} /></span><span className="tool-text"><strong>{item.name}</strong><small>{item.en}</small></span><span className="tool-chevron"><ArrowUpRight size={14} /></span></button>)}</nav>
+        <div className="section-caption">精修与创作 <span>10 TOOLS</span></div>
+        <nav className="tool-list" aria-label="精修工具">{TOOLS.map(item => <button key={item.id} data-testid={`tool-${item.id}`} className={`tool-card ${tool === item.id ? 'selected' : ''}`} disabled={busy || !projectReady} onClick={() => changeTool(item.id)}><span className="tool-icon"><item.icon size={21} strokeWidth={1.6} /></span><span className="tool-text"><strong>{item.name}</strong><small>{item.en}</small></span><span className="tool-chevron"><ArrowUpRight size={14} /></span></button>)}</nav>
         <div className="sidebar-divider" />
         <button className={`local-tool ${showAdjustments ? 'selected' : ''}`} onClick={() => setShowAdjustments(!showAdjustments)}><SlidersHorizontal size={18} /><span>基础调色</span><span className="local-badge">本地</span><ChevronDown className={showAdjustments ? 'rotated' : ''} size={14} /></button>
         <div className="sidebar-note"><Layers2 size={17} /><p>从原图开始，随时可回退。<br />人像精修在本机处理。</p></div>
@@ -465,44 +622,47 @@ export default function App() {
       </aside>
 
       <main className="editor-main">
-        <div className="document-bar"><div className="document-title"><span className="document-dot" />{doc ? doc.name : '未打开照片'}{doc && <span className="document-tag">{doc.edits ? `${doc.edits} 次编辑` : '原始照片'}</span>}</div><div className="history-actions"><button className="icon-button" title="撤销编辑" aria-label="撤销编辑" disabled={!doc?.history.length || busy} onClick={undo}><Undo2 size={17} /></button><button className="icon-button" title="重做编辑" aria-label="重做编辑" disabled={!doc?.future.length || busy} onClick={redo}><Redo2 size={17} /></button><span className="vertical-line" /><button className={`compare-button ${compare ? 'active' : ''}`} onClick={() => setCompare(!compare)} disabled={!doc || busy}><SplitSquareHorizontal size={16} /><span>前后对比</span></button></div></div>
+        <div className="document-bar"><div className="document-title"><span className="document-dot" />{doc ? doc.name : '未打开照片'}{doc && <span className="document-tag">{doc.edits ? `${doc.edits} 次编辑` : '原始照片'}</span>}</div><div className="history-actions"><button className="icon-button" title="撤销编辑" aria-label="撤销编辑" disabled={!doc?.history.length || busy} onClick={undo}><Undo2 size={17} /></button><button className="icon-button" title="重做编辑" aria-label="重做编辑" disabled={!doc?.future.length || busy} onClick={redo}><Redo2 size={17} /></button><span className="vertical-line" /><button className={`compare-button ${compare ? 'active' : ''}`} onClick={() => setCompare(!compare)} disabled={!doc || busy || !projectReady}><SplitSquareHorizontal size={16} /><span>前后对比</span></button></div></div>
         <div ref={stageRef} className={`stage ${!doc ? 'stage-empty' : ''}`}>
-          {!doc ? <div className="empty-editor"><div className="empty-art" aria-hidden="true"><div className="art-photo art-photo-back" /><div className="art-photo art-photo-front"><div className="art-sun" /><div className="art-hill art-hill-one" /><div className="art-hill art-hill-two" /><Sparkles size={27} /></div><span className="art-corner corner-one" /><span className="art-corner corner-two" /></div><span className="eyebrow">YOUR PHOTO, YOUR FINISH.</span><h1>导入照片，开始精修</h1><p>保留自然纹理，让每一处细节恰到好处。</p><button className="button button-primary button-large" disabled={busy} onClick={() => inputRef.current?.click()}><Plus size={19} />选择照片</button><span className="drop-hint">也可以把照片拖到这里</span><div className="empty-quick-actions"><button disabled={busy} onClick={openBatch}>一组照片批量修</button><button onClick={() => setGuideOpen(true)}>第一次用？看 4 步入门</button></div><div className="file-support"><span>JPEG</span><span>PNG</span><span>WebP</span><i />每张最多 30 MB</div></div> : <div className="photo-scroll"><div className="photo-frame" style={{ width: displayWidth, height: displayHeight }}>
+          {!doc ? <div className="empty-editor"><div className="empty-art" aria-hidden="true"><div className="art-photo art-photo-back" /><div className="art-photo art-photo-front"><div className="art-sun" /><div className="art-hill art-hill-one" /><div className="art-hill art-hill-two" /><Sparkles size={27} /></div><span className="art-corner corner-one" /><span className="art-corner corner-two" /></div><span className="eyebrow">YOUR PHOTO, YOUR FINISH.</span><h1>导入照片，开始精修</h1><p>保留自然纹理，让每一处细节恰到好处。</p><button className="button button-primary button-large" disabled={busy || !projectReady} onClick={() => inputRef.current?.click()}><Plus size={19} />选择照片</button><span className="drop-hint">也可以把照片拖到这里</span><div className="empty-quick-actions"><button disabled={busy || !projectReady} onClick={openBatch}>一组照片批量修</button><button onClick={() => setGuideOpen(true)}>第一次用？看 4 步入门</button></div><div className="file-support"><span>JPEG</span><span>PNG</span><span>WebP / RAW</span><i />JPEG 等 30 MB · RAW 80 MB</div></div> : <div className="photo-scroll"><div className="photo-frame" style={{ width: displayWidth, height: displayHeight }}>
             <img className="working-image" src={doc.current} alt="当前编辑照片" draggable={false} />
             {tool === 'natural' && !compare && <div className="portrait-face-markers" aria-hidden="true">{portraitMarkers.faces.map(face => <span key={face.id} className={portraitMarkers.selected === 'all' || portraitMarkers.selected === face.id ? 'selected' : ''} style={{ left: `${face.bounds.x * 100}%`, top: `${face.bounds.y * 100}%`, width: `${face.bounds.width * 100}%`, height: `${face.bounds.height * 100}%` }}><small>{face.label}</small></span>)}</div>}
+            {tool === 'point' && samplePoint && pointMode === 'clone' && !compare && <span className="sample-point" style={{ left: `${samplePoint.x * 100}%`, top: `${samplePoint.y * 100}%` }}>供样</span>}
             {compare && <><div className="original-overlay" style={{ clipPath: `inset(0 ${100 - split}% 0 0)` }}><img src={doc.comparison || doc.original} alt="原始照片对比" draggable={false} /></div><span className="comparison-label before">原图</span><span className="comparison-label after">当前</span><div className="split-line" style={{ left: `${split}%` }}><span><SplitSquareHorizontal size={16} /></span></div><input className="split-input" type="range" min="0" max="100" value={split} onChange={event => setSplit(Number(event.target.value))} aria-label="前后对比分界" /></>}
             <canvas ref={maskRef} data-testid="mask-canvas" className={`mask-canvas ${brushMode === 'pan' || compare || busy ? 'noninteractive' : ''}`} style={{ opacity: showMask && !compare ? 0.48 : 0 }} onPointerDown={startDrawing} onPointerMove={moveDrawing} onPointerUp={finishDrawing} onPointerCancel={finishDrawing} onLostPointerCapture={finishDrawing} onPointerLeave={() => { setPointer(null); if (!drawingRef.current) finishDrawing(); }} aria-label="在照片上涂抹需要处理的区域" />
             <canvas ref={protectionRef} data-testid="protection-canvas" className="protection-canvas" style={{ opacity: showMask && !compare ? 0.5 : 0 }} aria-label="红色区域保留本次处理前的原像素" />
-            {pointer && brushMode !== 'pan' && !compare && !busy && <span className={`brush-cursor ${brushMode === 'erase' ? 'erase' : brushMode === 'protect' ? 'protect' : ''}`} style={{ left: pointer.x, top: pointer.y, width: brushSize, height: brushSize }} />}
+            {pointer && brushMode !== 'pan' && !compare && !busy && <span className={`brush-cursor ${brushMode === 'erase' ? 'erase' : brushMode === 'protect' ? 'protect' : ''}`} style={{ left: pointer.x, top: pointer.y, width: tool === 'point' && brushMode === 'paint' ? pointRadius * 2 * fittedScale * zoom : brushSize, height: tool === 'point' && brushMode === 'paint' ? pointRadius * 2 * fittedScale * zoom : brushSize }} />}
           </div></div>}
-          {doc && <div className="canvas-toolbar"><button aria-label="画笔" title="画笔 B" className={brushMode === 'paint' ? 'active' : ''} disabled={busy || compare} onClick={() => { setBrushMode('paint'); setMaskTarget('edit'); }}><Brush size={17} /></button><button aria-label="保护画笔" title="保护画笔 P" className={brushMode === 'protect' ? 'active protect-active' : ''} disabled={busy || compare} onClick={() => { setBrushMode('protect'); setMaskTarget('protect'); setShowMask(true); }}><ShieldCheck size={17} /></button><button aria-label={maskTarget === 'protect' ? '擦除保护区' : '擦除选区'} title="擦除当前涂层 E" className={brushMode === 'erase' ? 'active' : ''} disabled={busy || compare} onClick={() => setBrushMode('erase')}><Eraser size={17} /></button><button aria-label="浏览照片" title="浏览照片 H" className={brushMode === 'pan' ? 'active' : ''} disabled={busy || compare} onClick={() => setBrushMode('pan')}><Hand size={17} /></button><span /><button aria-label="缩小" disabled={zoom <= 0.5} onClick={() => setZoom(Math.max(0.5, zoom - 0.25))}><Minus size={15} /></button><output>{Math.round(fittedScale * zoom * 100)}%</output><button aria-label="放大" disabled={zoom >= maximumZoom} onClick={() => setZoom(Math.min(maximumZoom, zoom + 0.25))}><Plus size={15} /></button><button className="zoom-actual" aria-label="100%细节" title="按原始像素查看皮肤与边缘" disabled={busy} onClick={() => setZoom(1 / Math.max(0.001, fittedScale))}>100%</button><button aria-label="适合窗口" title="适合窗口" onClick={() => setZoom(1)}><Maximize size={15} /></button></div>}
+          {doc && <div className="canvas-toolbar"><button aria-label="画笔" title="画笔 B" className={brushMode === 'paint' ? 'active' : ''} disabled={busy || compare} onClick={() => { setBrushMode('paint'); setMaskTarget('edit'); }}><Brush size={17} /></button><button aria-label="保护画笔" title="保护画笔 P" className={brushMode === 'protect' ? 'active protect-active' : ''} disabled={busy || compare} onClick={() => { setBrushMode('protect'); setMaskTarget('protect'); setShowMask(true); }}><ShieldCheck size={17} /></button><button aria-label={maskTarget === 'protect' ? '擦除保护区' : '擦除选区'} title="擦除当前涂层 E" className={brushMode === 'erase' ? 'active' : ''} disabled={busy || compare} onClick={() => setBrushMode('erase')}><Eraser size={17} /></button><button aria-label="浏览照片" title="浏览照片 H" className={brushMode === 'pan' ? 'active' : ''} disabled={busy || compare} onClick={() => setBrushMode('pan')}><Hand size={17} /></button><span /><button aria-label="缩小" disabled={zoom <= 0.5} onClick={() => setZoom(Math.max(0.5, zoom - 0.25))}><Minus size={15} /></button><output>{Math.round(fittedScale * zoom * 100)}%</output><button aria-label="放大" disabled={zoom >= maximumZoom} onClick={() => setZoom(Math.min(maximumZoom, zoom + 0.25))}><Plus size={15} /></button><button className="zoom-actual" aria-label="100%细节" title="按原始像素查看皮肤与边缘" disabled={busy || !projectReady} onClick={() => setZoom(1 / Math.max(0.001, fittedScale))}>100%</button><button aria-label="适合窗口" title="适合窗口" onClick={() => setZoom(1)}><Maximize size={15} /></button></div>}
           {busy && <div className="busy-overlay" role="status"><LoaderCircle className="spin" size={30} /><strong>{busyLabel}</strong><span>{elapsed ? `已用时 ${elapsed} 秒` : '请稍候'}</span>{(abortRef.current || portraitBusy) && <button className="button button-quiet" onClick={() => { abortRef.current?.abort(); portraitRef.current?.cancel(); }}>取消本次处理</button>}</div>}
         </div>
-        <div className="image-status"><span>{doc ? `${doc.width.toLocaleString()} × ${doc.height.toLocaleString()} px` : '照片将在本机打开'}</span><span>{doc ? tool === 'natural' ? '本地人像精修 · 原尺寸合成导出' : 'AI 输入最长边 2048 px · 原尺寸合成导出' : '支持鼠标与触屏涂抹'}<span className="status-dot muted" />{doc ? doc.edits > 0 && doc.exportedCurrent !== doc.current ? '有未导出修改' : doc.exportedCurrent === doc.current ? '当前版本已导出' : '原图已载入' : '准备就绪'}</span></div>
-        <section className="filmstrip" aria-label="已导入照片"><div className="filmstrip-heading"><span>照片</span><small>{String(documents.length).padStart(2, '0')}</small></div><div className="thumbnail-list">{documents.map((item, index) => <div className={`thumbnail ${item.id === activeId ? 'active' : ''}`} key={item.id}><button className="thumbnail-select" aria-label={`选择照片 ${item.name}`} disabled={busy} onClick={() => setActiveId(item.id)}><img src={item.current} alt={item.name} /><span>{String(index + 1).padStart(2, '0')}</span>{item.edits > 0 && <i><Check size={10} /></i>}</button><button className="remove-thumbnail" title="从工作台移除" aria-label={`移除照片 ${item.name}`} disabled={busy} onClick={() => removeDocument(item.id)}><X size={11} /></button></div>)}<button className="add-thumbnail" aria-label="添加照片" disabled={busy} onClick={() => inputRef.current?.click()}><Plus size={21} /><span>添加照片</span></button>{!documents.length && <span className="filmstrip-empty">你的照片会显示在这里</span>}</div><span className="filmstrip-count">{documents.length}/10</span></section>
+        <div className="image-status" title={doc?.sourceInfo}><span>{doc ? `${doc.width.toLocaleString()} × ${doc.height.toLocaleString()} px` : '照片将在本机打开'}</span><span>{doc ? tool === 'natural' || tool === 'point' && pointMode !== 'instruction' ? '本地处理 · 原尺寸合成导出' : 'AI 输入最长边 2048 px · 原尺寸合成导出' : '支持鼠标与触屏涂抹'}<span className="status-dot muted" />{doc ? doc.edits > 0 && doc.exportedCurrent !== doc.current ? '有未导出修改' : doc.exportedCurrent === doc.current ? '当前版本已导出' : '原图已载入' : '准备就绪'}</span></div>
+        <section className="filmstrip" aria-label="已导入照片"><div className="filmstrip-heading"><span>照片</span><small>{String(documents.length).padStart(2, '0')}</small></div><div className="thumbnail-list">{documents.map((item, index) => <div className={`thumbnail ${item.id === activeId ? 'active' : ''}`} key={item.id}><button className="thumbnail-select" aria-label={`选择照片 ${item.name}`} disabled={busy || !projectReady} onClick={() => setActiveId(item.id)}><img src={item.current} alt={item.name} /><span>{String(index + 1).padStart(2, '0')}</span>{item.edits > 0 && <i><Check size={10} /></i>}</button><button className="remove-thumbnail" title="从工作台移除" aria-label={`移除照片 ${item.name}`} disabled={busy || !projectReady} onClick={() => removeDocument(item.id)}><X size={11} /></button></div>)}<button className="add-thumbnail" aria-label="添加照片" disabled={busy || !projectReady} onClick={() => inputRef.current?.click()}><Plus size={21} /><span>添加照片</span></button>{!documents.length && <span className="filmstrip-empty">你的照片会显示在这里</span>}</div><span className="filmstrip-count">{documents.length}/10</span></section>
       </main>
 
-      <aside className="properties-sidebar"><div className="properties-scroll"><div className="properties-heading"><span className="properties-icon"><activeTool.icon size={21} /></span><div><span className="eyebrow">AI RETOUCH</span><h2>{activeTool.name}</h2></div><span className="ai-chip">{tool === 'natural' ? '本地 AI' : 'AI'}</span></div><p className="tool-description">{activeTool.description}</p>
-        <PhotoHealth source={doc?.current || ''} disabled={busy} onApplyExposure={applySuggestedExposure} /><button className="beginner-guide-link" onClick={() => setGuideOpen(true)}>第一次使用？查看修图步骤与画笔说明</button>
-        <PortraitPanel ref={portraitRef} restoreSession={portraitRestore?.documentId === doc?.id ? portraitRestore : undefined} session={doc ? portraitSessions.current.get(doc.id) : undefined} onSessionChange={snapshot => { if (doc && !removedPortraitDocuments.current.has(doc.id) && snapshot.knownSources.includes(doc.current)) { portraitSessions.current.set(doc.id, snapshot); if (!revisionSessions.current.has(doc.id)) revisionSessions.current.set(doc.id, new Map()); revisionSessions.current.get(doc.id)!.set(doc.current, snapshot); } }} key={doc?.id || 'empty'} source={doc?.current || ''} active={tool === 'natural'} disabled={busy} getMasks={() => ({ protection: protectionRef.current, selection: maskRef.current })} onBusy={handlePortraitBusy} onApply={image => { if (doc) pushEdit(doc.id, image, undefined, true); }} onFacesChange={handlePortraitFaces} onSectionChange={handlePortraitSection} notify={notify} />
-        {doc?.aiReview && <div className="property-section result-review"><div className="property-title">检查本次添加结果<span>本地切换</span></div><div className="style-categories" aria-label="添加结果合成方式"><button data-testid="result-selection" className={doc.aiReview.mode === 'selection' ? 'selected' : ''} aria-pressed={doc.aiReview.mode === 'selection'} disabled={busy} onClick={() => void reviewAiResult('selection')}>选区合成</button><button data-testid="result-full" className={doc.aiReview.mode === 'full' ? 'selected' : ''} aria-pressed={doc.aiReview.mode === 'full'} disabled={busy} onClick={() => void reviewAiResult('full')}>{doc.aiReview.protection ? '完整画面＋保护区' : '模型完整画面'}</button></div><p className="preset-description">{doc.aiReview.protection ? '切换完整画面也会保留生成时的保护区原像素。未保护区域仍可能被模型重绘，切换不会再次调用模型。' : '完整画面会采用模型整张输出，人物五官与背景都可能变化。想保住人物，请从原图重做并先涂保护区。切换不再调用模型。'}</p></div>}
-        {tool === 'sky' && <div className="property-section creative-section"><div className="property-title">选择天空<span>05 PRESETS</span></div><div className="sky-grid">{SKY_PRESETS.map(preset => <button key={preset.id} data-testid={`sky-preset-${preset.id}`} aria-pressed={skyId === preset.id} className={`sky-preset ${skyId === preset.id ? 'selected' : ''}`} disabled={busy} onClick={() => setSkyId(preset.id)}><span className="sky-swatch" style={{ background: `linear-gradient(155deg, ${preset.colors.join(', ')})` }} /><strong>{preset.name}</strong>{skyId === preset.id && <Check size={12} />}</button>)}</div><p className="preset-description">{activeSky.description}。色卡为氛围示意，生成效果取决于照片和模型。</p></div>}
-        {tool === 'style' && <div className="property-section creative-section"><div className="property-title">风格灵感<span>08 LOOKS</span></div><div className="style-categories" aria-label="风格分类">{(['photo', 'art'] as const).map(category => <button key={category} data-testid={`style-category-${category}`} aria-pressed={styleCategory === category} className={styleCategory === category ? 'selected' : ''} disabled={busy} onClick={() => { setStyleCategory(category); setStyleId(STYLE_PRESETS.find(preset => preset.category === category)!.id); }}>{category === 'photo' ? '摄影调色' : '艺术重绘'}</button>)}</div><div className="style-grid">{STYLE_PRESETS.filter(preset => preset.category === styleCategory).map(preset => <button key={preset.id} data-testid={`style-preset-${preset.id}`} aria-pressed={styleId === preset.id} className={`style-preset ${styleId === preset.id ? 'selected' : ''}`} disabled={busy} onClick={() => setStyleId(preset.id)}><span className="style-swatch" style={{ background: `linear-gradient(135deg, ${preset.colors.join(', ')})` }}><Palette size={18} />{styleId === preset.id && <i><Check size={11} /></i>}</span><strong>{preset.name}</strong></button>)}</div><p className="preset-description">{activeStyle.description}。{activeStyle.category === 'art' ? '会改变照片材质与笔触，保留人物辨识和构图。' : '以颜色、影调和氛围为主，尽量保留原有细节。'}色卡仅为氛围示意。</p></div>}
-        {(tool === 'match' || tool === 'style') && <div className="property-section reference-section"><div className="property-title">风格参考图<span>{tool === 'match' ? '必需' : '可选'}</span></div>{reference ? <div className="reference-card"><img src={reference.dataUrl} alt="已上传的风格参考图" /><div><strong title={reference.name}>{reference.name}</strong><span>仅迁移色调与视觉氛围</span><button data-testid="reference-upload" disabled={busy} onClick={() => referenceInputRef.current?.click()}>更换参考图 <ArrowUpRight size={11} /></button></div><button data-testid="reference-remove" className="icon-button" aria-label="移除参考图" disabled={busy} onClick={() => setReference(null)}><X size={15} /></button></div> : <button data-testid="reference-upload" className="reference-upload" disabled={busy} onClick={() => referenceInputRef.current?.click()}><Images size={23} /><strong>上传参考图</strong><span>{tool === 'match' ? '选择喜欢的样片，学习它的色彩' : '也可以用自己的样片辅助风格'}</span><small>JPEG · PNG · WebP</small></button>}<p className="preset-description">参考图与原图会一起发送至所选模型。只借鉴色调，不复制人物与构图。</p></div>}
-        <div className="property-section protection-section"><div className="property-title"><span className="protection-title"><ShieldCheck size={14} />人物与细节保护</span><span>{hasProtection ? '已涂保护区' : '未设置'}</span></div><p className="property-help">{tool === 'natural' ? '红色区保留本次处理前的原像素，塑形也不会解除保护。想调整轮廓时，请让该处保持可编辑；背景直线和其他人物可先涂红色保护。' : '添加背景物体时可保护整个人；拥抱等互动可保护头部并延伸到颈部，让身体交叠处保持可编辑。红色区保留处理前原像素，切换照片后需重涂。'}</p><div className="protection-actions"><button className={brushMode === 'protect' ? 'selected' : ''} disabled={!doc || busy || compare} onClick={() => { setBrushMode('protect'); setMaskTarget('protect'); setShowMask(true); }}><ShieldCheck size={13} />涂画保护区</button><button disabled={!hasProtection || busy} onClick={() => { setBrushMode('erase'); setMaskTarget('protect'); }}>擦除保护</button><button aria-label="清除保护区" disabled={!hasProtection || busy} onClick={clearProtection}><RotateCcw size={12} />清除</button></div><p className="protection-status">{hasProtection && !showMask ? '结果预览：保护标记已隐藏，保护仍生效' : brushMode === 'protect' ? '当前：红色保护画笔 · 快捷键 P' : brushMode === 'erase' && maskTarget === 'protect' ? '当前：擦除保护区 · 切回编辑画笔用 B' : '绿色为编辑区域，红色为保护区域'}</p>{hasProtection && <button className="protection-visibility" data-testid="protection-visibility" aria-pressed={showMask} disabled={busy} onClick={() => setShowMask(!showMask)}>{showMask ? <EyeOff size={13} /> : <Eye size={13} />}{showMask ? '隐藏保护标记' : '显示保护标记'}<small>不影响导出</small></button>}</div>
-        {tool !== 'natural' && <div className="property-section"><div className="property-title">处理强度<span>{strength <= 30 ? '轻柔' : strength <= 65 ? '自然' : '明显'}</span></div><Slider label="精修程度" value={strength} min={10} max={100} suffix="%" onChange={setStrength} disabled={busy} /><p className="strength-explanation">{tool === 'smooth' || tool === 'blemish' || tool === 'match' || tool === 'style' && activeStyle.category === 'photo' ? '调低会保留更多原图效果；该数值同时控制结果混合。' : '用于描述生成要求，新增与移除的内容保持完整显示。'}</p><div className="strength-labels"><span>轻柔保留</span><span>明显修饰</span></div><div className="tip-card"><Sparkles size={14} /><span>{activeTool.tip}</span></div></div>}
-        <div className="property-section"><div className="property-title">局部选区<span className={hasSelection ? 'selection-ready' : ''}>{hasSelection ? '已涂选' : tool === 'add' ? '可选 · 自由布局' : '未涂选'}</span></div><p className="property-help">{tool === 'add' ? hasSelection ? '本次仅在绿色选区内添加，红色保护区优先。想让 AI 自由布局时，可清除绿色选区。' : '不涂绿色选区，AI 按描述自由安排位置与前后遮挡。红色保护区原样保留，未保护区域可能变化。' : needsSelection ? '在照片上涂过需要移除的内容。' : tool === 'sky' ? '不涂选时由模型识别天空；涂选时仅合成选区。' : tool === 'people' ? '不涂选时识别背景路人；多人合照可手动指定。' : '可直接处理整张照片，也可涂选局部。'}</p><Slider label="画笔大小" value={brushSize} min={5} max={160} suffix=" px" onChange={setBrushSize} disabled={busy} /><div className="mask-actions"><button onClick={undoMask} disabled={!maskUndoCount || busy}><Undo2 size={13} />撤回涂抹</button><button onClick={clearMask} disabled={!hasSelection || busy}><RotateCcw size={13} />清除</button><button className={showMask ? 'active' : ''} title="显示或隐藏编辑与保护标记，不影响导出" aria-label="显示或隐藏选区" aria-pressed={showMask} onClick={() => setShowMask(!showMask)}>{showMask ? <Eye size={15} /> : <EyeOff size={15} />}</button></div></div>
-        {tool !== 'natural' && <div className="property-section prompt-section"><label htmlFor="prompt" className="property-title">{tool === 'add' ? '添加什么内容' : '补充要求'}<span>{tool === 'add' ? '必填' : '可选'}</span></label><textarea id="prompt" placeholder={tool === 'add' ? '例如：猫坐在男孩身后，前爪从两侧伸到衣服前方环抱腰部，保留男孩脸和头部位置'  : tool === 'people' ? '例如：保留中间穿蓝衣的主体，只去掉右后方路人' : tool === 'sky' ? '例如：保留建筑轮廓，让湖面倒影与新天空一致' : tool === 'style' ? '例如：更柔和一点，保留人物辨识与原有构图' : tool === 'match' ? '例如：学习参考图的暖色高光，但保留我的肤色' : tool === 'remove' ? '例如：去掉路人，保留地面阴影与背景结构' : '例如：保留雀斑，减淡额头和下巴的痘印'} value={customPrompt} onChange={event => setCustomPrompt(event.target.value)} maxLength={1200} disabled={busy} /><div className="prompt-footnote"><span>{tool === 'style' && activeStyle.category === 'art' ? '艺术重绘会改变材质与笔触' : '保留身份与构图的要求会自动加入'}</span><span>{customPrompt.length}/1200</span></div></div>}
-        {showAdjustments && <div className="property-section adjustments"><div className="property-title">基础调色<span>本地处理</span></div>{([{ key: 'exposure', label: '曝光', min: -2, max: 2, step: 0.1, suffix: ' EV' }, { key: 'contrast', label: '对比度', min: -50, max: 50 }, { key: 'saturation', label: '饱和度', min: -50, max: 50 }, { key: 'temperature', label: '蓝—琥珀偏移', min: -100, max: 100 }, { key: 'tint', label: '绿—洋红偏移', min: -100, max: 100 }] as const).map(item => <Slider key={item.key} label={item.label} value={adjustments[item.key]} min={item.min} max={item.max} step={'step' in item ? item.step : 1} suffix={'suffix' in item ? item.suffix : ''} disabled={busy} onChange={value => setAdjustments(previous => ({ ...previous, [item.key]: value }))} />)}<button className="button button-secondary full-width" onClick={() => void applyColor()} disabled={!doc || busy || Object.values(adjustments).every(value => value === 0)}>应用调色</button></div>}
-        <div className="preservation-note"><Check size={13} /><span>{tool === 'natural' ? '本地人像精修 · 红区优先 · 从同一底图计算' : doc?.aiReview?.mode === 'full' ? doc.aiReview.protection ? '完整画面已保留保护区 · 其他区域可能变化' : '当前为模型完整画面 · 人物与背景可能变化' : hasSelection ? '原图保留 · 选区外保持原样' : tool === 'add' ? hasProtection ? '自由布局 · 红色保护区保留原像素' : '自由布局 · 未设保护区，人物与背景可能变化' : '原图保留 · 可撤销 · 整图生成请检查细节'}</span></div>
-      </div><div className="run-section"><button className="run-button" onClick={() => void runAi()} disabled={!doc || busy}><WandSparkles size={19} />{busy ? '正在处理…' : tool === 'natural' ? portraitSection === 'natural' ? '开始一键自然精修' : '应用人像精修' : `开始${activeTool.name}`}<span><ArrowUpRight size={16} /></span></button><p>{tool === 'natural' ? '本机处理 · 无需 API Key · 不消耗模型额度' : provider.apiKey ? `使用 ${DEFAULT_PROVIDERS[providerKind].label} · 按服务商规则计费` : <button onClick={() => setSettingsOpen(true)}>先配置模型 API Key <ArrowUpRight size={11} /></button>}</p></div></aside>
+      <aside className="properties-sidebar"><div className="properties-scroll"><div className="properties-heading"><span className="properties-icon"><activeTool.icon size={21} /></span><div><span className="eyebrow">AI RETOUCH</span><h2>{activeTool.name}</h2></div><span className="ai-chip">{tool === 'natural' ? '本地 AI' : tool === 'point' && pointMode !== 'instruction' ? '本地' : '云端 AI'}</span></div><p className="tool-description">{activeTool.description}</p>
+        <PhotoHealth source={doc?.current || ''} disabled={busy || !projectReady} onApplyExposure={applySuggestedExposure} /><button className="beginner-guide-link" onClick={() => setGuideOpen(true)}>第一次使用？查看修图步骤与画笔说明</button>
+        <PortraitPanel ref={portraitRef} restoreSession={portraitRestore?.documentId === doc?.id ? portraitRestore : undefined} session={doc ? portraitSessions.current.get(doc.id) : undefined} onSessionChange={snapshot => { if (doc && !removedPortraitDocuments.current.has(doc.id) && snapshot.knownSources.includes(doc.current)) { portraitSessions.current.set(doc.id, snapshot); if (!revisionSessions.current.has(doc.id)) revisionSessions.current.set(doc.id, new Map()); revisionSessions.current.get(doc.id)!.set(doc.current, snapshot); const signature = JSON.stringify([snapshot.section, snapshot.selected, snapshot.scanned, snapshot.bodyScanned, snapshot.common, snapshot.parameters]); if (sessionFingerprints.current.get(doc.id) !== signature) { sessionFingerprints.current.set(doc.id, signature); setDraftTick(previous => previous + 1); } } }} key={doc?.id || 'empty'} source={doc?.current || ''} active={tool === 'natural'} disabled={busy || !projectReady} getMasks={() => ({ protection: protectionRef.current, selection: maskRef.current })} onBusy={handlePortraitBusy} onApply={image => { if (doc) pushEdit(doc.id, image, undefined, true); }} onFacesChange={handlePortraitFaces} onSectionChange={handlePortraitSection} notify={notify} />
+        {tool === 'point' && <div className="property-section point-tools"><div className="property-title">选择点修方式<span>{pointMode === 'instruction' ? '需要图像模型 API' : '无需 API Key'}</span></div><div className="point-mode-options">{([['spot', '小瑕疵修补'], ['clone', '指定供样修补'], ['instruction', '一句话云端点修']] as const).map(([mode, label]) => <button key={mode} aria-pressed={pointMode === mode} disabled={busy || !projectReady} onClick={() => { setPointMode(mode); setBrushMode('paint'); setMaskTarget('edit'); }}>{label}</button>)}</div><p className="property-help">{pointMode === 'spot' ? '本地搜索附近纹理来修小痘点和斑点，不重新生成五官。大块阴影、褶皱请选云端点修。先放大到 100%，再点瑕疵。' : pointMode === 'clone' ? '先设置附近干净的供样位置，再点瑕疵。纹理和光照越接近越自然。电脑也可按 Alt 点击供样。' : '点击照片，绿色圆内可改；写下要求再运行。照片将发送到所选云端模型，圈外像素在本机保留。'} </p><Slider label="点修半径" value={pointRadius} min={2} max={doc ? Math.max(2, Math.min(128, Math.floor(.12 * Math.min(doc.width, doc.height)))) : 128} suffix=" 原图px" disabled={busy || !projectReady} onChange={resizePointRadius} /><div className="editing-inline-actions"><button disabled={!doc || busy || !projectReady} onClick={() => { setBrushMode('paint'); setMaskTarget('edit'); setChoosingSample(false); notify('请点击需要修饰的位置。'); }}>选择修补位置</button>{pointMode === 'clone' && <button aria-pressed={choosingSample} disabled={!doc || busy || !projectReady} onClick={() => { setChoosingSample(true); setBrushMode('paint'); setMaskTarget('edit'); }}>设置供样点</button>}<button disabled={!doc || busy || !projectReady} onClick={() => setZoom(1 / Math.max(.001, fittedScale))}>100% 检查</button><button disabled={!hasSelection || busy} onClick={clearMask}>清除点选</button></div><p className="property-help">{pointTarget ? '已选择修补位置。' : '等待点击照片。'}{samplePoint && pointMode === 'clone' ? ' 供样已设置。' : ''}{choosingSample ? ' 当前点击将设置供样位置。' : ''}</p>{pointMode === 'instruction' && <div className="editing-inline-actions">{[['减轻汗渍', '只减轻这处汗渍或汗珠，保留真实肤质、肤色与原有光线。'], ['衣服祛褶皱', '减轻这处衣物的杂乱褶皱，保留服装款式、接缝、布料纹理与正常垂坠。'], ['整理碎发', '清理这处明显零碎飞发，保留原发型、发量、发际线和自然发丝。']].map(([label, prompt]) => <button key={label} disabled={busy || !projectReady} onClick={() => setCustomPrompt(prompt)}>{label}</button>)}</div>}</div>}
+        {doc?.aiReview && <div className="property-section result-review"><div className="property-title">检查本次添加结果<span>本地切换</span></div><div className="style-categories" aria-label="添加结果合成方式"><button data-testid="result-selection" className={doc.aiReview.mode === 'selection' ? 'selected' : ''} aria-pressed={doc.aiReview.mode === 'selection'} disabled={busy || !projectReady} onClick={() => void reviewAiResult('selection')}>选区合成</button><button data-testid="result-full" className={doc.aiReview.mode === 'full' ? 'selected' : ''} aria-pressed={doc.aiReview.mode === 'full'} disabled={busy || !projectReady} onClick={() => void reviewAiResult('full')}>{doc.aiReview.protection ? '完整画面＋保护区' : '模型完整画面'}</button></div><p className="preset-description">{doc.aiReview.protection ? '切换完整画面也会保留生成时的保护区原像素。未保护区域仍可能被模型重绘，切换不会再次调用模型。' : '完整画面会采用模型整张输出，人物五官与背景都可能变化。想保住人物，请从原图重做并先涂保护区。切换不再调用模型。'}</p></div>}
+        {tool === 'sky' && <div className="property-section creative-section"><div className="property-title">选择天空<span>05 PRESETS</span></div><div className="sky-grid">{SKY_PRESETS.map(preset => <button key={preset.id} data-testid={`sky-preset-${preset.id}`} aria-pressed={skyId === preset.id} className={`sky-preset ${skyId === preset.id ? 'selected' : ''}`} disabled={busy || !projectReady} onClick={() => setSkyId(preset.id)}><span className="sky-swatch" style={{ background: `linear-gradient(155deg, ${preset.colors.join(', ')})` }} /><strong>{preset.name}</strong>{skyId === preset.id && <Check size={12} />}</button>)}</div><p className="preset-description">{activeSky.description}。色卡为氛围示意，生成效果取决于照片和模型。</p></div>}
+        {tool === 'style' && <div className="property-section creative-section"><div className="property-title">风格灵感<span>08 LOOKS</span></div><div className="style-categories" aria-label="风格分类">{(['photo', 'art'] as const).map(category => <button key={category} data-testid={`style-category-${category}`} aria-pressed={styleCategory === category} className={styleCategory === category ? 'selected' : ''} disabled={busy || !projectReady} onClick={() => { setStyleCategory(category); setStyleId(STYLE_PRESETS.find(preset => preset.category === category)!.id); }}>{category === 'photo' ? '摄影调色' : '艺术重绘'}</button>)}</div><div className="style-grid">{STYLE_PRESETS.filter(preset => preset.category === styleCategory).map(preset => <button key={preset.id} data-testid={`style-preset-${preset.id}`} aria-pressed={styleId === preset.id} className={`style-preset ${styleId === preset.id ? 'selected' : ''}`} disabled={busy || !projectReady} onClick={() => setStyleId(preset.id)}><span className="style-swatch" style={{ background: `linear-gradient(135deg, ${preset.colors.join(', ')})` }}><Palette size={18} />{styleId === preset.id && <i><Check size={11} /></i>}</span><strong>{preset.name}</strong></button>)}</div><p className="preset-description">{activeStyle.description}。{activeStyle.category === 'art' ? '会改变照片材质与笔触，保留人物辨识和构图。' : '以颜色、影调和氛围为主，尽量保留原有细节。'}色卡仅为氛围示意。</p></div>}
+        {(tool === 'match' || tool === 'style') && <div className="property-section reference-section"><div className="property-title">风格参考图<span>{tool === 'match' ? '必需' : '可选'}</span></div>{reference ? <div className="reference-card"><img src={reference.dataUrl} alt="已上传的风格参考图" /><div><strong title={reference.name}>{reference.name}</strong><span>仅迁移色调与视觉氛围</span><button data-testid="reference-upload" disabled={busy || !projectReady} onClick={() => referenceInputRef.current?.click()}>更换参考图 <ArrowUpRight size={11} /></button></div><button data-testid="reference-remove" className="icon-button" aria-label="移除参考图" disabled={busy || !projectReady} onClick={() => setReference(null)}><X size={15} /></button></div> : <button data-testid="reference-upload" className="reference-upload" disabled={busy || !projectReady} onClick={() => referenceInputRef.current?.click()}><Images size={23} /><strong>上传参考图</strong><span>{tool === 'match' ? '选择喜欢的样片，学习它的色彩' : '也可以用自己的样片辅助风格'}</span><small>JPEG · PNG · WebP</small></button>}<p className="preset-description">参考图与原图会一起发送至所选模型。只借鉴色调，不复制人物与构图。</p></div>}
+        <div className="property-section protection-section"><div className="property-title"><span className="protection-title"><ShieldCheck size={14} />人物与细节保护</span><span>{hasProtection ? '已涂保护区' : '未设置'}</span></div><p className="property-help">{tool === 'point' ? '点修也会保留红色保护像素。小痘点请用小范围；眼睛、嘴唇和发际线附近先缩小画笔，或先保护不想修改的位置。' : tool === 'natural' ? '红色区保留本次处理前的原像素，塑形也不会解除保护。想调整轮廓时，请让该处保持可编辑；背景直线和其他人物可先涂红色保护。' : '添加背景物体时可保护整个人；拥抱等互动可保护头部并延伸到颈部，让身体交叠处保持可编辑。红色区保留处理前原像素，切换照片和刷新后会恢复。'}</p><div className="protection-actions"><button className={brushMode === 'protect' ? 'selected' : ''} disabled={!doc || busy || compare} onClick={() => { setBrushMode('protect'); setMaskTarget('protect'); setShowMask(true); }}><ShieldCheck size={13} />涂画保护区</button><button disabled={!hasProtection || busy} onClick={() => { setBrushMode('erase'); setMaskTarget('protect'); }}>擦除保护</button><button aria-label="清除保护区" disabled={!hasProtection || busy} onClick={clearProtection}><RotateCcw size={12} />清除</button></div><p className="protection-status">{hasProtection && !showMask ? '结果预览：保护标记已隐藏，保护仍生效' : brushMode === 'protect' ? '当前：红色保护画笔 · 快捷键 P' : brushMode === 'erase' && maskTarget === 'protect' ? '当前：擦除保护区 · 切回编辑画笔用 B' : '绿色为编辑区域，红色为保护区域'}</p>{hasProtection && <button className="protection-visibility" data-testid="protection-visibility" aria-pressed={showMask} disabled={busy || !projectReady} onClick={() => setShowMask(!showMask)}>{showMask ? <EyeOff size={13} /> : <Eye size={13} />}{showMask ? '隐藏保护标记' : '显示保护标记'}<small>不影响导出</small></button>}</div>
+        {tool !== 'natural' && !(tool === 'point' && pointMode !== 'instruction') && <div className="property-section"><div className="property-title">处理强度<span>{strength <= 30 ? '轻柔' : strength <= 65 ? '自然' : '明显'}</span></div><Slider label="精修程度" value={strength} min={10} max={100} suffix="%" onChange={setStrength} disabled={busy || !projectReady} /><p className="strength-explanation">{tool === 'smooth' || tool === 'blemish' || tool === 'match' || tool === 'style' && activeStyle.category === 'photo' ? '调低会保留更多原图效果；该数值同时控制结果混合。' : '用于描述生成要求，新增与移除的内容保持完整显示。'}</p><div className="strength-labels"><span>轻柔保留</span><span>明显修饰</span></div><div className="tip-card"><Sparkles size={14} /><span>{activeTool.tip}</span></div></div>}
+        {tool !== 'point' && <div className="property-section"><div className="property-title">局部选区<span className={hasSelection ? 'selection-ready' : ''}>{hasSelection ? '已涂选' : tool === 'add' ? '可选 · 自由布局' : '未涂选'}</span></div><p className="property-help">{tool === 'add' ? hasSelection ? '本次仅在绿色选区内添加，红色保护区优先。想让 AI 自由布局时，可清除绿色选区。' : '不涂绿色选区，AI 按描述自由安排位置与前后遮挡。红色保护区原样保留，未保护区域可能变化。' : needsSelection ? '在照片上涂过需要移除的内容。' : tool === 'sky' ? '不涂选时由模型识别天空；涂选时仅合成选区。' : tool === 'people' ? '不涂选时识别背景路人；多人合照可手动指定。' : '可直接处理整张照片，也可涂选局部。'}</p><Slider label="画笔大小" value={brushSize} min={5} max={160} suffix=" px" onChange={setBrushSize} disabled={busy || !projectReady} /><div className="mask-actions"><button onClick={undoMask} disabled={!maskUndoCount || busy}><Undo2 size={13} />撤回涂抹</button><button onClick={clearMask} disabled={!hasSelection || busy}><RotateCcw size={13} />清除</button><button className={showMask ? 'active' : ''} title="显示或隐藏编辑与保护标记，不影响导出" aria-label="显示或隐藏选区" aria-pressed={showMask} onClick={() => setShowMask(!showMask)}>{showMask ? <Eye size={15} /> : <EyeOff size={15} />}</button></div></div>}
+        {tool !== 'natural' && !(tool === 'point' && pointMode !== 'instruction') && <div className="property-section prompt-section"><label htmlFor="prompt" className="property-title">{tool === 'add' ? '添加什么内容' : tool === 'point' ? '描述点修要求' : '补充要求'}<span>{tool === 'add' || tool === 'point' ? '必填' : '可选'}</span></label><textarea id="prompt" placeholder={tool === 'point' ? '例如：减轻这处衣服褶皱，保留布料纹理和原有光线' : tool === 'add' ? '例如：猫坐在男孩身后，前爪从两侧伸到衣服前方环抱腰部，保留男孩脸和头部位置'  : tool === 'people' ? '例如：保留中间穿蓝衣的主体，只去掉右后方路人' : tool === 'sky' ? '例如：保留建筑轮廓，让湖面倒影与新天空一致' : tool === 'style' ? '例如：更柔和一点，保留人物辨识与原有构图' : tool === 'match' ? '例如：学习参考图的暖色高光，但保留我的肤色' : tool === 'remove' ? '例如：去掉路人，保留地面阴影与背景结构' : '例如：保留雀斑，减淡额头和下巴的痘印'} value={customPrompt} onChange={event => setCustomPrompt(event.target.value)} maxLength={1200} disabled={busy || !projectReady} /><div className="prompt-footnote"><span>{tool === 'style' && activeStyle.category === 'art' ? '艺术重绘会改变材质与笔触' : '保留身份与构图的要求会自动加入'}</span><span>{customPrompt.length}/1200</span></div></div>}
+        {showAdjustments && <div className="property-section adjustments"><div className="property-title">基础调色<span>本地处理</span></div>{([{ key: 'exposure', label: '曝光', min: -2, max: 2, step: 0.1, suffix: ' EV' }, { key: 'contrast', label: '对比度', min: -50, max: 50 }, { key: 'saturation', label: '饱和度', min: -50, max: 50 }, { key: 'temperature', label: '蓝—琥珀偏移', min: -100, max: 100 }, { key: 'tint', label: '绿—洋红偏移', min: -100, max: 100 }] as const).map(item => <Slider key={item.key} label={item.label} value={adjustments[item.key]} min={item.min} max={item.max} step={'step' in item ? item.step : 1} suffix={'suffix' in item ? item.suffix : ''} disabled={busy || !projectReady} onChange={value => setAdjustments(previous => ({ ...previous, [item.key]: value }))} />)}<ColorTools key={doc?.id || 'empty-color'} disabled={!doc || busy || !projectReady} basicChanged={Object.values(adjustments).some(value => value !== 0)} onApply={applyColor} />{doc && <GeometryTools source={doc.current} width={doc.width} height={doc.height} disabled={busy || !projectReady} onApply={applyGeometry} />}</div>}
+        <div className="preservation-note"><Check size={13} /><span>{tool === 'natural' ? '本地人像精修 · 红区优先 · 从同一底图计算' : tool === 'point' ? '只修改点选范围 · 红色保护区优先 · 可撤销' : doc?.aiReview?.mode === 'full' ? doc.aiReview.protection ? '完整画面已保留保护区 · 其他区域可能变化' : '当前为模型完整画面 · 人物与背景可能变化' : hasSelection ? '原图保留 · 选区外保持原样' : tool === 'add' ? hasProtection ? '自由布局 · 红色保护区保留原像素' : '自由布局 · 未设保护区，人物与背景可能变化' : '原图保留 · 可撤销 · 整图生成请检查细节'}</span></div>
+      </div><div className="run-section"><button className="run-button" onClick={() => void runAi()} disabled={!doc || busy || !projectReady}><WandSparkles size={19} />{busy ? '正在处理…' : tool === 'natural' ? portraitSection === 'natural' ? '开始一键自然精修' : '应用人像精修' : tool === 'point' ? pointMode === 'instruction' ? '开始云端点修' : '应用本地修补' : `开始${activeTool.name}`}<span><ArrowUpRight size={16} /></span></button><p>{tool === 'natural' || tool === 'point' && pointMode !== 'instruction' ? '本机处理 · 无需 API Key · 不消耗模型额度' : provider.apiKey ? `使用 ${DEFAULT_PROVIDERS[providerKind].label} · 按服务商规则计费` : <button onClick={() => setSettingsOpen(true)}>先配置模型 API Key <ArrowUpRight size={11} /></button>}</p></div></aside>
     </div>
     <BatchStudio open={batchOpen} onClose={() => setBatchOpen(false)} onBusy={handleBatchBusy} initialSettings={batchSettings} notify={notify} />
-    {guideOpen && <div className="modal-backdrop" onClick={event => { if (event.target === event.currentTarget) setGuideOpen(false); }}><section className="modal guide-modal" role="dialog" aria-modal="true" aria-labelledby="guide-title"><div className="modal-heading"><div><span className="eyebrow">START HERE</span><h2 id="guide-title">4 步修出自然照片</h2></div><button className="icon-button" aria-label="关闭新手指南" onClick={() => setGuideOpen(false)}><X size={20} /></button></div><ol className="guide-steps"><li><strong>导入照片，先选一种任务</strong><p>修肤色和皮肤用「人像精修」，本地处理、无需 API Key。一组照片用「批量修图」。</p></li><li><strong>先自然精修，再少量微调</strong><p>默认不改变脸型和身材。合照可点人物分别调整；磨皮、提亮先轻一点，满意后保存个人预设。</p></li><li><strong>需要创作时再用画笔</strong><p>绿色表示允许改，红色表示必须保留。添加内容可以只写描述；保护头部可涂到颈部，给互动留出身体空间。眼睛图标只隐藏标记，「清除」才删除涂抹。</p></li><li><strong>检查细节，导出再关闭</strong><p>点「100%细节」检查眼睛、皮肤和头颈，随时可前后对比、撤销。单张工作台关闭后不会保留照片；批量已完成结果会保存在当前浏览器本地。</p></li></ol><div className="guide-actions"><button className="button button-primary" onClick={() => { setGuideOpen(false); if (doc) changeTool('natural'); else inputRef.current?.click(); }}>先修一张</button><button className="button button-secondary" onClick={() => { setGuideOpen(false); openBatch(); }}>去批量修图</button></div></section></div>}
-    {dragging && <div className="drag-overlay"><Upload size={42} /><strong>松开，导入照片</strong><span>JPEG · PNG · WebP</span></div>}
+    {guideOpen && <div className="modal-backdrop" onClick={event => { if (event.target === event.currentTarget) setGuideOpen(false); }}><section className="modal guide-modal" role="dialog" aria-modal="true" aria-labelledby="guide-title"><div className="modal-heading"><div><span className="eyebrow">START HERE</span><h2 id="guide-title">4 步修出自然照片</h2></div><button className="icon-button" aria-label="关闭新手指南" onClick={() => setGuideOpen(false)}><X size={20} /></button></div><ol className="guide-steps"><li><strong>导入照片，先选一种任务</strong><p>修肤色和皮肤用「人像精修」，本地处理、无需 API Key。一组照片用「批量修图」。</p></li><li><strong>先自然精修，再少量微调</strong><p>默认不改变脸型和身材。合照可点人物分别调整；磨皮、提亮先轻一点，满意后保存个人预设。</p></li><li><strong>需要创作时再用画笔</strong><p>绿色表示允许改，红色表示必须保留。添加内容可以只写描述；保护头部可涂到颈部，给互动留出身体空间。眼睛图标只隐藏标记，「清除」才删除涂抹。</p></li><li><strong>检查细节，导出再关闭</strong><p>点「100%细节」检查眼睛、皮肤和头颈，随时可前后对比、撤销。工作台会自动保存照片、历史和参数到当前浏览器。看到“已自动保存”后可刷新续修；批量成片也保存在本机。</p></li></ol><div className="guide-actions"><button className="button button-primary" onClick={() => { setGuideOpen(false); if (doc) changeTool('natural'); else inputRef.current?.click(); }}>先修一张</button><button className="button button-secondary" onClick={() => { setGuideOpen(false); openBatch(); }}>去批量修图</button></div></section></div>}
+    {!projectReady && <div className="project-loading-overlay" role="status"><LoaderCircle className="spin" size={26} /><span>正在恢复本地工程，请稍候…</span></div>}
+    {dragging && <div className="drag-overlay"><Upload size={42} /><strong>松开，导入照片</strong><span>JPEG · PNG · WebP · RAW / RW2</span></div>}
     {toast && <div className={`toast ${toast.error ? 'error' : ''}`} role={toast.error ? 'alert' : 'status'}>{toast.error ? <CircleHelp size={17} /> : <Check size={17} />}<span>{toast.text}</span><button aria-label="关闭提示" onClick={() => setToast(null)}><X size={15} /></button></div>}
 
     {settingsOpen && <div className="modal-backdrop" onClick={event => { if (event.target === event.currentTarget) setSettingsOpen(false); }}><section className="modal settings-modal" role="dialog" aria-modal="true" aria-labelledby="settings-title"><div className="modal-heading"><div><span className="eyebrow">BRING YOUR OWN MODEL</span><h2 id="settings-title">连接你的 AI 模型</h2></div><button className="icon-button" aria-label="关闭模型设置" onClick={() => setSettingsOpen(false)}><X size={20} /></button></div><p className="modal-intro">选择支持图像编辑的服务。照片会在开始 AI 处理时发送到你选择的接口。</p><div className="provider-grid">{(Object.keys(DEFAULT_PROVIDERS) as ProviderKind[]).map(kind => <button key={kind} className={providerKind === kind ? 'selected' : ''} onClick={() => { setProviderKind(kind); setKeyVisible(false); }}><span>{DEFAULT_PROVIDERS[kind].label}</span>{providerKind === kind && <Check size={15} />}</button>)}</div><label className="text-field"><span>API 地址</span><input type="url" aria-describedby={providerKind === 'ark' ? 'ark-address-help' : undefined} autoCapitalize="off" spellCheck={false} value={provider.baseUrl} onChange={event => changeProviderField('baseUrl', event.target.value)} placeholder={DEFAULT_PROVIDERS[providerKind].baseUrl} />{providerKind === 'ark' && <small id="ark-address-help" className="api-address-help">建议填到 /api/v3；粘贴完整 /images/generations 地址也会自动识别。</small>}</label><label className="text-field"><span>模型名称／接入点 ID</span><input autoCapitalize="off" spellCheck={false} value={provider.model} onChange={event => changeProviderField('model', event.target.value)} placeholder={DEFAULT_PROVIDERS[providerKind].model} /></label><label className="text-field"><span>API Key<span className="field-meta">{provider.rememberApiKey ? '当前浏览器记住' : '仅当前会话'}</span></span><div className="secret-input"><input autoComplete="off" autoCapitalize="off" spellCheck={false} type={keyVisible ? 'text' : 'password'} value={provider.apiKey} onChange={event => changeProviderField('apiKey', event.target.value)} placeholder="填写服务商提供的 API Key" /><button type="button" aria-label={keyVisible ? '隐藏 API Key' : '显示 API Key'} onClick={() => setKeyVisible(!keyVisible)}>{keyVisible ? <EyeOff size={17} /> : <Eye size={17} />}</button></div></label><label className="remember-key"><input type="checkbox" checked={provider.rememberApiKey} onChange={event => { const rememberApiKey = event.currentTarget.checked; setConfigs(previous => ({ ...previous, [providerKind]: { ...previous[providerKind], rememberApiKey } })); }} /><span>记住 API Key<small>仅保存在当前浏览器；取消勾选会删除已保存的密钥，本次会话仍可使用。</small></span></label>{storageStatus !== 'saved' && <p className="storage-warning" role="status">{storageStatus === 'clear-failed' ? '浏览器未能更新或清除本地记录，请在浏览器站点设置中清除本地数据。' : '浏览器未能保存设置，刷新后可能需要重新填写。'}</p>}<div className="settings-note"><CircleHelp size={17} /><p>{providerKind === 'compatible' ? '兼容服务需支持图像编辑与图片上传；只有文字聊天能力的模型无法修图。' : providerKind === 'ark' ? '可填写服务商提供的模型名或你创建的接入点 ID。账号须已开通对应图像编辑能力。' : '需要对应服务商的 API 权限与额度。软件不会代替你购买额度。'}<br />各服务商的密钥分别保存。共用电脑可取消记住或点击“清除密钥”。</p></div><div className="modal-actions"><button className="button button-quiet" onClick={() => setConfigs(previous => ({ ...previous, [providerKind]: { ...previous[providerKind], apiKey: '' } }))}>清除密钥</button><button className="button button-primary" onClick={finishSettings}><Check size={16} />完成设置</button></div></section></div>}
-    {exportOpen && doc && <div className="modal-backdrop" onClick={event => { if (event.target === event.currentTarget && !busy) setExportOpen(false); }}><section className="modal export-modal" role="dialog" aria-modal="true" aria-labelledby="export-title"><div className="modal-heading"><div><span className="eyebrow">READY TO SAVE</span><h2 id="export-title">导出你的照片</h2></div><button className="icon-button" aria-label="关闭导出" disabled={busy} onClick={() => setExportOpen(false)}><X size={20} /></button></div><div className="export-preview"><img src={doc.current} alt="待导出照片" /><div><strong>{doc.name}</strong><span>{doc.width.toLocaleString()} × {doc.height.toLocaleString()} px</span><span>按当前编辑结果导出，原文件不覆盖</span></div></div><div className="format-options"><button className={exportFormat === 'jpeg' ? 'selected' : ''} onClick={() => setExportFormat('jpeg')}><strong>JPEG</strong><span>高画质 · 便于分享</span></button><button className={exportFormat === 'png' ? 'selected' : ''} onClick={() => setExportFormat('png')}><strong>PNG</strong><span>无损编码 · 文件较大</span></button></div><p className="export-note">第一版以浏览器解码后的照片为基础，不保留原文件的 EXIF／ICC 配置。</p><button className="button button-primary full-width button-large" onClick={() => void savePhoto()} disabled={busy}>{busy ? <LoaderCircle className="spin" size={18} /> : <ArrowDownToLine size={18} />}{busy ? '正在导出…' : '保存照片'}</button></section></div>}
+    {exportOpen && doc && <div className="modal-backdrop" onClick={event => { if (event.target === event.currentTarget && !busy) setExportOpen(false); }}><section className="modal export-modal" role="dialog" aria-modal="true" aria-labelledby="export-title"><div className="modal-heading"><div><span className="eyebrow">READY TO SAVE</span><h2 id="export-title">导出你的照片</h2></div><button className="icon-button" aria-label="关闭导出" disabled={busy || !projectReady} onClick={() => setExportOpen(false)}><X size={20} /></button></div><div className="export-preview"><img src={doc.current} alt="待导出照片" /><div><strong>{doc.name}</strong><span>{doc.width.toLocaleString()} × {doc.height.toLocaleString()} px</span><span>按当前编辑结果导出，原文件不覆盖</span></div></div><div className="format-options"><button className={exportFormat === 'jpeg' ? 'selected' : ''} onClick={() => setExportFormat('jpeg')}><strong>JPEG</strong><span>高画质 · 便于分享</span></button><button className={exportFormat === 'png' ? 'selected' : ''} onClick={() => setExportFormat('png')}><strong>PNG</strong><span>无损编码 · 文件较大</span></button></div><p className="export-note">以 8bit sRGB 编辑结果为基础，不保留原文件的 EXIF／ICC 配置。</p><button className="button button-primary full-width button-large" onClick={() => void savePhoto()} disabled={busy || !projectReady}>{busy ? <LoaderCircle className="spin" size={18} /> : <ArrowDownToLine size={18} />}{busy ? '正在导出…' : '保存照片'}</button></section></div>}
   </div>;
 }
