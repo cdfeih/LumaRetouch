@@ -252,7 +252,7 @@ export async function renderNaturalRetouch(
     work.context.drawImage(baselineImage, 0, 0, workWidth, workHeight)
     const workSource = work.context.getImageData(0, 0, workWidth, workHeight).data
     const hasDodgeBurn = subjects.some(subject => (subject.settings.dodgeBurn ?? 0) > 0)
-    const workProtection = protection && hasDodgeBurn ? scaleProtectionAlpha(
+    const workProtection = protection ? scaleProtectionAlpha(
       alphaChannel(protection.getContext('2d')!.getImageData(0, 0, protection.width, protection.height).data),
       protection.width, protection.height, workWidth, workHeight) : null
     const workSubjects = subjects.map(subject => {

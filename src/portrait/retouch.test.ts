@@ -40,6 +40,19 @@ describe('natural local portrait retouching', () => {
     expect(output.slice(0, 3)).not.toEqual(source.slice(0, 3))
   })
 
+  it('excludes protected colors from skin means and smoothing/blemish neighborhoods', () => {
+    const width = 9, height = 9, source = photo(width, height, [180, 140, 120]);
+    const mask = new Uint8ClampedArray(width * height).fill(255), protection = new Uint8ClampedArray(width * height);
+    const changed = new Uint8ClampedArray(source);
+    for (const pixel of [30, 40, 50]) { protection[pixel] = 1; changed.set([250, 20, 240, 255], pixel * 4); }
+    const settings = { ...ALL, darkCircles: 100 };
+    const a = retouchPortraitPixels(source, width, height, [{ mask, settings }], protection);
+    const b = retouchPortraitPixels(changed, width, height, [{ mask, settings }], protection);
+    for (let pixel = 0; pixel < mask.length; pixel++) if (!protection[pixel]) {
+      expect(a.slice(pixel * 4, pixel * 4 + 4)).toEqual(b.slice(pixel * 4, pixel * 4 + 4));
+    }
+  })
+
   it('adjusts two people independently and leaves the unconfigured space alone', () => {
     const source = photo(10, 5), first = new Uint8ClampedArray(50), second = new Uint8ClampedArray(50)
     for (let y = 0; y < 5; y += 1) {

@@ -132,7 +132,7 @@ export function retouchPortraitPixels(
     for (let pixel = 0; pixel < count; pixel += 1) {
       const alpha = mask[pixel]
       const offset = pixel * 4
-      if (alpha === 0 || source[offset + 3] === 0) continue
+      if (alpha === 0 || source[offset + 3] === 0 || protection?.[pixel]) continue
       const x = pixel % width, y = Math.floor(pixel / width)
       left = Math.min(left, x); right = Math.max(right, x)
       top = Math.min(top, y); bottom = Math.max(bottom, y)
@@ -168,7 +168,7 @@ export function retouchPortraitPixels(
                 const nx = x + dx
                 if ((dx === 0 && dy === 0) || nx < 0 || nx >= width) continue
                 const neighbor = ny * width + nx, no = neighbor * 4
-                if (mask[neighbor] === 0 || source[no + 3] === 0) continue
+                if (mask[neighbor] === 0 || source[no + 3] === 0 || protection?.[neighbor]) continue
                 const nr = source[no], ng = source[no + 1], nb = source[no + 2]
                 const spatial = mask[neighbor] / 255 / (1 + dx * dx + dy * dy)
                 const colorDistance = (nr - r) ** 2 + (ng - g) ** 2 + (nb - b) ** 2

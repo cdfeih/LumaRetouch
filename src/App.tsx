@@ -16,10 +16,12 @@ import { DEFAULT_PORTRAIT_SETTINGS } from './portrait/settings';
 import type { PortraitSection, PortraitSettings } from './portrait/settings';
 import { BatchStudio } from './batch/BatchStudio';
 import { PhotoHealth } from './components/PhotoHealth';
+import { revisionOf, restoreRevision } from './editor/history';
+import type { EditorDocument } from './editor/history';
 
 type Tool = RetouchTool | 'natural';
 type AiResultReview = { source: string; raw: string; selected: string; full?: string; mode: 'selection' | 'full'; protection: HTMLCanvasElement | null };
-type Document = { id: string; name: string; original: string; current: string; width: number; height: number; history: string[]; future: string[]; edits: number; aiReview?: AiResultReview; exportedCurrent?: string };
+type Document = EditorDocument & { aiReview?: AiResultReview };
 type Adjustments = { exposure: number; contrast: number; saturation: number; temperature: number; tint: number };
 const ZERO_ADJUSTMENTS: Adjustments = { exposure: 0, contrast: 0, saturation: 0, temperature: 0, tint: 0 };
 const TOOLS = [
@@ -91,6 +93,8 @@ export default function App() {
   const abortRef = useRef<AbortController | null>(null);
   const portraitRef = useRef<PortraitPanelHandle>(null);
   const portraitSessions = useRef(new Map<string, PortraitSessionSnapshot>());
+  const revisionSessions = useRef(new Map<string, Map<string, PortraitSessionSnapshot>>());
+  const [portraitRestore, setPortraitRestore] = useState<{ documentId: string; revision: number; snapshot: PortraitSessionSnapshot | null }>();
   const removedPortraitDocuments = useRef(new Set<string>());
   const doc = documents.find(item => item.id === activeId);
   const activeTool = TOOLS.find(item => item.id === tool)!;
@@ -214,20 +218,37 @@ export default function App() {
     finally { setBusy(false); if (referenceInputRef.current) referenceInputRef.current.value = ''; }
   }
   function pushEdit(id: string, image: string, aiReview?: AiResultReview, preserveSelection = false) {
-    setDocuments(previous => previous.map(item => item.id === id ? { ...item, current: image, history: [...item.history, item.current].slice(-5), future: [], edits: item.edits + 1, aiReview } : item));
+    const currentSession = preserveSelection ? portraitRef.current?.getSnapshot() : undefined;
+    if (currentSession) {
+      portraitSessions.current.set(id, currentSession);
+      if (!revisionSessions.current.has(id)) revisionSessions.current.set(id, new Map());
+      revisionSessions.current.get(id)!.set(image, currentSession);
+    }
+    setDocuments(previous => previous.map(item => item.id === id ? { ...item, current: image, history: [...item.history, revisionOf(item, revisionSessions.current.get(id)?.get(item.current) ?? null)].slice(-5), future: [], edits: item.edits + 1, aiReview } : item));
     setCompare(false);
     setShowMask(false);
     if (!preserveSelection) clearMask();
   }
   function undo() {
     if (!doc || busy || !doc.history.length) return;
-    setDocuments(previous => previous.map(item => item.id === activeId ? { ...item, current: item.history.at(-1)!, history: item.history.slice(0, -1), future: [item.current, ...item.future].slice(0, 5), edits: Math.max(0, item.edits - 1), aiReview: undefined } : item));
+    const target = doc.history.at(-1)!;
+    const current = revisionOf(doc, portraitRef.current?.getSnapshot() ?? null);
+    setDocuments(previous => previous.map(item => item.id === activeId ? { ...restoreRevision(item, target), history: item.history.slice(0, -1), future: [current, ...item.future].slice(0, 5), edits: Math.max(0, item.edits - 1), aiReview: undefined } : item));
+    restorePortraitRevision(target.portrait);
     clearMask();
   }
   function redo() {
     if (!doc || busy || !doc.future.length) return;
-    setDocuments(previous => previous.map(item => item.id === activeId ? { ...item, current: item.future[0], history: [...item.history, item.current].slice(-5), future: item.future.slice(1), edits: item.edits + 1, aiReview: undefined } : item));
+    const target = doc.future[0];
+    const current = revisionOf(doc, portraitRef.current?.getSnapshot() ?? null);
+    setDocuments(previous => previous.map(item => item.id === activeId ? { ...restoreRevision(item, target), history: [...item.history, current].slice(-5), future: item.future.slice(1), edits: item.edits + 1, aiReview: undefined } : item));
+    restorePortraitRevision(target.portrait);
     clearMask();
+  }
+  function restorePortraitRevision(snapshot: PortraitSessionSnapshot | null) {
+    if (snapshot) portraitSessions.current.set(activeId, snapshot);
+    else portraitSessions.current.delete(activeId);
+    setPortraitRestore(previous => ({ documentId: activeId, revision: (previous?.revision ?? 0) + 1, snapshot }));
   }
   async function reviewAiResult(mode: 'selection' | 'full') {
     if (!doc?.aiReview || busy || doc.aiReview.mode === mode) return;
@@ -404,7 +425,10 @@ export default function App() {
   }
   function removeDocument(id: string) {
     if (busy) return;
+    const closing = documents.find(item => item.id === id);
+    if (closing && closing.edits > 0 && closing.exportedCurrent !== closing.current && !window.confirm(`“${closing.name}”还有未导出的修改。确定从工作台移除吗？请先取消并导出，避免丢失。`)) return;
     removedPortraitDocuments.current.add(id); portraitSessions.current.delete(id);
+    revisionSessions.current.delete(id);
     const rest = documents.filter(item => item.id !== id);
     setDocuments(rest);
     if (id === activeId) setActiveId(rest[0]?.id || '');
@@ -446,7 +470,7 @@ export default function App() {
           {!doc ? <div className="empty-editor"><div className="empty-art" aria-hidden="true"><div className="art-photo art-photo-back" /><div className="art-photo art-photo-front"><div className="art-sun" /><div className="art-hill art-hill-one" /><div className="art-hill art-hill-two" /><Sparkles size={27} /></div><span className="art-corner corner-one" /><span className="art-corner corner-two" /></div><span className="eyebrow">YOUR PHOTO, YOUR FINISH.</span><h1>导入照片，开始精修</h1><p>保留自然纹理，让每一处细节恰到好处。</p><button className="button button-primary button-large" disabled={busy} onClick={() => inputRef.current?.click()}><Plus size={19} />选择照片</button><span className="drop-hint">也可以把照片拖到这里</span><div className="empty-quick-actions"><button disabled={busy} onClick={openBatch}>一组照片批量修</button><button onClick={() => setGuideOpen(true)}>第一次用？看 4 步入门</button></div><div className="file-support"><span>JPEG</span><span>PNG</span><span>WebP</span><i />每张最多 30 MB</div></div> : <div className="photo-scroll"><div className="photo-frame" style={{ width: displayWidth, height: displayHeight }}>
             <img className="working-image" src={doc.current} alt="当前编辑照片" draggable={false} />
             {tool === 'natural' && !compare && <div className="portrait-face-markers" aria-hidden="true">{portraitMarkers.faces.map(face => <span key={face.id} className={portraitMarkers.selected === 'all' || portraitMarkers.selected === face.id ? 'selected' : ''} style={{ left: `${face.bounds.x * 100}%`, top: `${face.bounds.y * 100}%`, width: `${face.bounds.width * 100}%`, height: `${face.bounds.height * 100}%` }}><small>{face.label}</small></span>)}</div>}
-            {compare && <><div className="original-overlay" style={{ clipPath: `inset(0 ${100 - split}% 0 0)` }}><img src={doc.original} alt="原始照片对比" draggable={false} /></div><span className="comparison-label before">原图</span><span className="comparison-label after">当前</span><div className="split-line" style={{ left: `${split}%` }}><span><SplitSquareHorizontal size={16} /></span></div><input className="split-input" type="range" min="0" max="100" value={split} onChange={event => setSplit(Number(event.target.value))} aria-label="前后对比分界" /></>}
+            {compare && <><div className="original-overlay" style={{ clipPath: `inset(0 ${100 - split}% 0 0)` }}><img src={doc.comparison || doc.original} alt="原始照片对比" draggable={false} /></div><span className="comparison-label before">原图</span><span className="comparison-label after">当前</span><div className="split-line" style={{ left: `${split}%` }}><span><SplitSquareHorizontal size={16} /></span></div><input className="split-input" type="range" min="0" max="100" value={split} onChange={event => setSplit(Number(event.target.value))} aria-label="前后对比分界" /></>}
             <canvas ref={maskRef} data-testid="mask-canvas" className={`mask-canvas ${brushMode === 'pan' || compare || busy ? 'noninteractive' : ''}`} style={{ opacity: showMask && !compare ? 0.48 : 0 }} onPointerDown={startDrawing} onPointerMove={moveDrawing} onPointerUp={finishDrawing} onPointerCancel={finishDrawing} onLostPointerCapture={finishDrawing} onPointerLeave={() => { setPointer(null); if (!drawingRef.current) finishDrawing(); }} aria-label="在照片上涂抹需要处理的区域" />
             <canvas ref={protectionRef} data-testid="protection-canvas" className="protection-canvas" style={{ opacity: showMask && !compare ? 0.5 : 0 }} aria-label="红色区域保留本次处理前的原像素" />
             {pointer && brushMode !== 'pan' && !compare && !busy && <span className={`brush-cursor ${brushMode === 'erase' ? 'erase' : brushMode === 'protect' ? 'protect' : ''}`} style={{ left: pointer.x, top: pointer.y, width: brushSize, height: brushSize }} />}
@@ -460,7 +484,7 @@ export default function App() {
 
       <aside className="properties-sidebar"><div className="properties-scroll"><div className="properties-heading"><span className="properties-icon"><activeTool.icon size={21} /></span><div><span className="eyebrow">AI RETOUCH</span><h2>{activeTool.name}</h2></div><span className="ai-chip">{tool === 'natural' ? '本地 AI' : 'AI'}</span></div><p className="tool-description">{activeTool.description}</p>
         <PhotoHealth source={doc?.current || ''} disabled={busy} onApplyExposure={applySuggestedExposure} /><button className="beginner-guide-link" onClick={() => setGuideOpen(true)}>第一次使用？查看修图步骤与画笔说明</button>
-        <PortraitPanel ref={portraitRef} session={doc ? portraitSessions.current.get(doc.id) : undefined} onSessionChange={snapshot => { if (doc && !removedPortraitDocuments.current.has(doc.id)) portraitSessions.current.set(doc.id, snapshot); }} key={doc?.id || 'empty'} source={doc?.current || ''} active={tool === 'natural'} disabled={busy} getMasks={() => ({ protection: protectionRef.current, selection: maskRef.current })} onBusy={handlePortraitBusy} onApply={image => { if (doc) pushEdit(doc.id, image, undefined, true); }} onFacesChange={handlePortraitFaces} onSectionChange={handlePortraitSection} notify={notify} />
+        <PortraitPanel ref={portraitRef} restoreSession={portraitRestore?.documentId === doc?.id ? portraitRestore : undefined} session={doc ? portraitSessions.current.get(doc.id) : undefined} onSessionChange={snapshot => { if (doc && !removedPortraitDocuments.current.has(doc.id) && snapshot.knownSources.includes(doc.current)) { portraitSessions.current.set(doc.id, snapshot); if (!revisionSessions.current.has(doc.id)) revisionSessions.current.set(doc.id, new Map()); revisionSessions.current.get(doc.id)!.set(doc.current, snapshot); } }} key={doc?.id || 'empty'} source={doc?.current || ''} active={tool === 'natural'} disabled={busy} getMasks={() => ({ protection: protectionRef.current, selection: maskRef.current })} onBusy={handlePortraitBusy} onApply={image => { if (doc) pushEdit(doc.id, image, undefined, true); }} onFacesChange={handlePortraitFaces} onSectionChange={handlePortraitSection} notify={notify} />
         {doc?.aiReview && <div className="property-section result-review"><div className="property-title">检查本次添加结果<span>本地切换</span></div><div className="style-categories" aria-label="添加结果合成方式"><button data-testid="result-selection" className={doc.aiReview.mode === 'selection' ? 'selected' : ''} aria-pressed={doc.aiReview.mode === 'selection'} disabled={busy} onClick={() => void reviewAiResult('selection')}>选区合成</button><button data-testid="result-full" className={doc.aiReview.mode === 'full' ? 'selected' : ''} aria-pressed={doc.aiReview.mode === 'full'} disabled={busy} onClick={() => void reviewAiResult('full')}>{doc.aiReview.protection ? '完整画面＋保护区' : '模型完整画面'}</button></div><p className="preset-description">{doc.aiReview.protection ? '切换完整画面也会保留生成时的保护区原像素。未保护区域仍可能被模型重绘，切换不会再次调用模型。' : '完整画面会采用模型整张输出，人物五官与背景都可能变化。想保住人物，请从原图重做并先涂保护区。切换不再调用模型。'}</p></div>}
         {tool === 'sky' && <div className="property-section creative-section"><div className="property-title">选择天空<span>05 PRESETS</span></div><div className="sky-grid">{SKY_PRESETS.map(preset => <button key={preset.id} data-testid={`sky-preset-${preset.id}`} aria-pressed={skyId === preset.id} className={`sky-preset ${skyId === preset.id ? 'selected' : ''}`} disabled={busy} onClick={() => setSkyId(preset.id)}><span className="sky-swatch" style={{ background: `linear-gradient(155deg, ${preset.colors.join(', ')})` }} /><strong>{preset.name}</strong>{skyId === preset.id && <Check size={12} />}</button>)}</div><p className="preset-description">{activeSky.description}。色卡为氛围示意，生成效果取决于照片和模型。</p></div>}
         {tool === 'style' && <div className="property-section creative-section"><div className="property-title">风格灵感<span>08 LOOKS</span></div><div className="style-categories" aria-label="风格分类">{(['photo', 'art'] as const).map(category => <button key={category} data-testid={`style-category-${category}`} aria-pressed={styleCategory === category} className={styleCategory === category ? 'selected' : ''} disabled={busy} onClick={() => { setStyleCategory(category); setStyleId(STYLE_PRESETS.find(preset => preset.category === category)!.id); }}>{category === 'photo' ? '摄影调色' : '艺术重绘'}</button>)}</div><div className="style-grid">{STYLE_PRESETS.filter(preset => preset.category === styleCategory).map(preset => <button key={preset.id} data-testid={`style-preset-${preset.id}`} aria-pressed={styleId === preset.id} className={`style-preset ${styleId === preset.id ? 'selected' : ''}`} disabled={busy} onClick={() => setStyleId(preset.id)}><span className="style-swatch" style={{ background: `linear-gradient(135deg, ${preset.colors.join(', ')})` }}><Palette size={18} />{styleId === preset.id && <i><Check size={11} /></i>}</span><strong>{preset.name}</strong></button>)}</div><p className="preset-description">{activeStyle.description}。{activeStyle.category === 'art' ? '会改变照片材质与笔触，保留人物辨识和构图。' : '以颜色、影调和氛围为主，尽量保留原有细节。'}色卡仅为氛围示意。</p></div>}

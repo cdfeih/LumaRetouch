@@ -12,7 +12,7 @@ import { deletePortraitPreset, loadPortraitPresets, PRESET_STORAGE_KEY, savePort
 import { BODY_FIELDS, DEFAULT_PORTRAIT_SETTINGS, equalPortraitSettings, normalizePortraitSettings, PORTRAIT_FIELDS, PORTRAIT_SECTIONS, SHAPE_FIELDS, ZERO_PORTRAIT_SETTINGS } from './settings';
 import type { PortraitSection, PortraitSettings } from './settings';
 
-export interface PortraitPanelHandle { apply(): Promise<void>; cancel(): void; getSettings(): PortraitSettings }
+export interface PortraitPanelHandle { apply(): Promise<void>; cancel(): void; getSettings(): PortraitSettings; getSnapshot(): PortraitSessionSnapshot }
 export interface PortraitSessionSnapshot {
   section: PortraitSection; people: PortraitPerson[]; scanned: boolean; bodyScanned: boolean;
   selected: string; parameters: Record<string, PortraitSettings>; common: PortraitSettings;
@@ -30,6 +30,8 @@ interface Props {
   onSectionChange(section: PortraitSection): void;
   notify(text: string, error?: boolean): void;
   session?: PortraitSessionSnapshot;
+  /** Explicit edit-history restore. Ordinary rerenders must not reset sliders. */
+  restoreSession?: { revision: number; snapshot: PortraitSessionSnapshot | null };
   onSessionChange?(snapshot: PortraitSessionSnapshot): void;
 }
 
@@ -85,27 +87,47 @@ export const PortraitPanel = forwardRef<PortraitPanelHandle, Props>(function Por
   const deformationHistory = useRef<Record<string, ShapeSettings>>(initial?.deformationHistory ?? {});
   const baseline = useRef(initial?.baseline ?? source);
   const knownSources = useRef(new Set(initial?.knownSources ?? [source]));
+  const restoredRevision = useRef<number | undefined>(undefined);
   const job = useRef<AbortController | null>(null);
   const firstSettings = people.length ? parameters[people[0].id] : undefined;
   const referenceSettings = selected === 'all' ? firstSettings || common : parameters[selected] || common;
   const targets = selected === 'all' ? people : people.filter(person => person.id === selected);
   const mixed = selected === 'all' && people.some(person => parameters[person.id] && !equalPortraitSettings(parameters[person.id], referenceSettings));
   const sessionSnapshot = useRef<PortraitSessionSnapshot | null>(null);
-  sessionSnapshot.current = { section, people, scanned, bodyScanned, selected, parameters, common,
+  const snapshot = (): PortraitSessionSnapshot => ({ section, people, scanned, bodyScanned, selected, parameters: parametersRef.current, common,
     detectedFaces: detectedFaces.current, detectedBodies: detectedBodies.current,
-    deformationHistory: deformationHistory.current, baseline: baseline.current, knownSources: [...knownSources.current] };
-  useEffect(() => { if (sessionSnapshot.current) props.onSessionChange?.(sessionSnapshot.current); });
-  useEffect(() => () => { if (sessionSnapshot.current) props.onSessionChange?.(sessionSnapshot.current); }, []);
+    deformationHistory: deformationHistory.current, baseline: baseline.current, knownSources: [...knownSources.current] });
+  sessionSnapshot.current = snapshot();
+  useEffect(() => { if (sessionSnapshot.current) props.onSessionChange?.(structuredClone(sessionSnapshot.current)); });
+  useEffect(() => () => { if (sessionSnapshot.current) props.onSessionChange?.(structuredClone(sessionSnapshot.current)); }, []);
   useEffect(() => { if (active) onFacesChange(people, selected); }, [active, people, selected, onFacesChange]);
 
   function storeParameters(next: Record<string, PortraitSettings>) { parametersRef.current = next; setParameters(next); }
   useEffect(() => {
+    const restore = props.restoreSession;
+    if (restore && restoredRevision.current !== restore.revision) {
+      restoredRevision.current = restore.revision;
+      job.current?.abort();
+      const saved = restore.snapshot ? structuredClone(restore.snapshot) : null;
+      baseline.current = saved?.baseline ?? source;
+      knownSources.current = new Set(saved?.knownSources ?? [source]);
+      detectedFaces.current = saved?.detectedFaces ?? null;
+      detectedBodies.current = saved?.detectedBodies ?? null;
+      deformationHistory.current = saved?.deformationHistory ?? {};
+      parametersRef.current = saved?.parameters ?? {};
+      setSection(saved?.section ?? 'natural'); setPeople(saved?.people ?? []);
+      setParameters(parametersRef.current); setCommon(saved?.common ?? { ...DEFAULT_PORTRAIT_SETTINGS });
+      setScanned(saved?.scanned ?? false); setBodyScanned(saved?.bodyScanned ?? false);
+      setSelected(saved?.selected ?? 'all');
+      onFacesChange(saved?.people ?? [], saved?.selected ?? 'all');
+      return;
+    }
     if (knownSources.current.has(source)) return;
     baseline.current = source; knownSources.current = new Set([source]);
     detectedFaces.current = null; detectedBodies.current = null; deformationHistory.current = {}; parametersRef.current = {};
     setPeople([]); setParameters({}); setScanned(false); setBodyScanned(false); setSelected('all');
     onFacesChange([], 'all');
-  }, [source, onFacesChange]);
+  }, [source, onFacesChange, props.restoreSession?.revision]);
   useEffect(() => () => { job.current?.abort(); }, []);
   useEffect(() => {
     const sync = (event: StorageEvent) => { if (event.key === PRESET_STORAGE_KEY || event.key === null) setPresets(loadPortraitPresets()); };
@@ -154,7 +176,9 @@ export const PortraitPanel = forwardRef<PortraitPanelHandle, Props>(function Por
         if (!person.face && SHAPE_FIELDS.slice(0, 3).some(field => settings[field])) throw new Error(`${person.label}没有可见面部，无法应用面部塑形。请将面部塑形归零后继续。`);
       }
       onBusy(true, '正在修饰肤色与皮肤细节');
-      const skin = await renderNaturalRetouch(baseline.current, baseline.current, chosen.flatMap(person => person.face ? [{ face: person.face, settings: parametersRef.current[person.id] || common }] : []), { signal: controller.signal });
+      // Red pixels are excluded from analysis as well as final output. Green
+      // alpha belongs only to the final warp merge, so it is never applied twice.
+      const skin = await renderNaturalRetouch(baseline.current, baseline.current, chosen.flatMap(person => person.face ? [{ face: person.face, settings: parametersRef.current[person.id] || common }] : []), { protection, signal: controller.signal });
       onBusy(true, '正在应用人像参数与保护范围');
       const chosenIds = new Set(chosen.map(person => person.id));
       const image = await renderPortraitWarp(skin, source, chosen.map(person => ({ face: person.face, body: person.body, settings: shapeOf(parametersRef.current[person.id] || common), previousSettings: deformationHistory.current[person.id] || ZERO_SHAPE })), {
@@ -164,10 +188,12 @@ export const PortraitPanel = forwardRef<PortraitPanelHandle, Props>(function Por
       });
       if (controller.signal.aborted) throw new DOMException('已取消', 'AbortError');
       if (image === source) { notify('没有可应用的变化。可检查参数、绿色选区或红色保护区。'); return; }
+      const nextHistory = { ...deformationHistory.current };
       for (const person of chosen) {
         const current = shapeOf(parametersRef.current[person.id] || common), previous = deformationHistory.current[person.id] || ZERO_SHAPE;
-        deformationHistory.current[person.id] = Object.fromEntries(SHAPE_FIELDS.map(key => [key, Math.abs(current[key] || 0) > Math.abs(previous[key] || 0) ? current[key] : previous[key]])) as ShapeSettings;
+        nextHistory[person.id] = Object.fromEntries(SHAPE_FIELDS.map(key => [key, Math.abs(current[key] || 0) > Math.abs(previous[key] || 0) ? current[key] : previous[key]])) as ShapeSettings;
       }
+      deformationHistory.current = nextHistory;
       knownSources.current.add(image);
       knownSources.current = new Set([baseline.current, ...Array.from(knownSources.current).filter(value => value !== baseline.current).slice(-6)]);
       onApply(image);
@@ -178,7 +204,7 @@ export const PortraitPanel = forwardRef<PortraitPanelHandle, Props>(function Por
       else notify(error instanceof Error ? error.message : '本地人像处理失败，请重试。', true);
     } finally { job.current = null; onBusy(false); }
   }
-  useImperativeHandle(ref, () => ({ apply: () => perform(true), cancel: () => job.current?.abort(), getSettings: () => ({ ...referenceSettings }) }));
+  useImperativeHandle(ref, () => ({ apply: () => perform(true), cancel: () => job.current?.abort(), getSettings: () => ({ ...referenceSettings }), getSnapshot: () => structuredClone(snapshot()) }));
 
   function changeSettings(settings: Partial<PortraitSettings>) {
     if (selected === 'all') {
