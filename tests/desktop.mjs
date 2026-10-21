@@ -99,7 +99,7 @@ try {
     cwd: root, env, timeout: 20000,
   });
   page = await app.firstWindow();
-  page.on('dialog', dialog => dialog.type() === 'beforeunload' ? dialog.accept() : dialog.dismiss());
+  page.on('dialog', dialog => (dialog.type() === 'beforeunload' ? dialog.accept() : dialog.dismiss()).catch(() => {}));
   page.on('pageerror', error => rendererErrors.push(error.message));
   // Electron 自身的 renderer 网络同样限制于本机。native HTTP 目标由下方 UI 配置。
   await page.route('**/*', async route => {

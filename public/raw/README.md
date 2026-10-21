@@ -8,7 +8,7 @@ RAW 单张限制 80 MiB，解码后的图像仍限制为 4000 万像素。高像
 
 - 包与源码：<https://github.com/colorhythm/libraw-wasm/tree/9b0f59a5e0f6d3d12a8f6fa594015ef4f30a6e95/packages/libraw.wasm>。
 - 该版本固定的 LibRaw 子模块：<https://github.com/LibRaw/LibRaw/tree/b860248a89d9082b8e0a1e202e516f46af9adb29>。
-- 完整对应 LibRaw 源码随应用提供：[LibRaw-b860248a-source.tar.gz](LibRaw-b860248a-source.tar.gz)，SHA-256：`f5da1e522ea195b54b30f3ff105ef2193daa04ea165dea825b4d6fe9d886395b`。未经修改；Wrapper 的构建脚本及绑定源码见上述固定提交。
+- 完整对应 LibRaw 源码随应用提供：[LibRaw-b860248a-source.tgz](LibRaw-b860248a-source.tgz)，SHA-256：`f5da1e522ea195b54b30f3ff105ef2193daa04ea165dea825b4d6fe9d886395b`。未经修改；Wrapper 的构建脚本及绑定源码见上述固定提交。
 - WASM 通过 Vite 资源管线从依赖包原样复制；不通过 CDN 加载、不使用 SharedArrayBuffer／跨源隔离。
 
 ## 许可证
