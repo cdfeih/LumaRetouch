@@ -37,6 +37,14 @@ function safeName(name: string, extension: string, index: number, used: Set<stri
   return candidate;
 }
 
+/** Exact single-entry size, including its UTF-8 filename and both ZIP headers. */
+export function imageArchiveEntryBytes(file: ArchiveImage): number {
+  const content = imageContent(file);
+  const name = encoder.encode(safeName(file.name, content.extension, 0, new Set()));
+  if (name.length > 0xffff) throw new Error('照片文件名过长，请缩短后导出。');
+  return content.size + name.length * 2 + 76;
+}
+
 /** A standard UTF-8 ZIP with stored entries; no external package or compression worker. */
 export async function createImageArchive(files: readonly ArchiveImage[], signal?: AbortSignal): Promise<Uint8Array<ArrayBuffer>> {
   checkAbort(signal);

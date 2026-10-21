@@ -1,8 +1,11 @@
 import type { PortraitSettings } from '../portrait/settings';
 
+export type BatchReviewState = 'pending' | 'approved' | 'redo';
+export interface BatchReviewMetadata { starred: boolean; review: BatchReviewState }
 export interface StoredBatchResult {
   id: string; name: string; blob: Blob; width: number; height: number; createdAt: number;
   settings: PortraitSettings; faceCount: number; bodyCount: number; warnings: string[];
+  starred?: boolean; review?: BatchReviewState;
 }
 const DATABASE = 'luma-batch-results-v1';
 let database: Promise<IDBDatabase> | undefined;
@@ -43,6 +46,24 @@ export async function listBatchResults(): Promise<StoredBatchResult[]> {
 export const saveBatchResult = (record: StoredBatchResult) => transaction('readwrite', store => store.put(record));
 export const getBatchResult = (id: string) => transaction<StoredBatchResult | undefined>('readonly', store => store.get(id));
 export const deleteBatchResult = (id: string) => transaction('readwrite', store => store.delete(id));
+
+/** Update review flags in the same transaction as its read; never resurrect a deleted result. */
+export async function updateBatchReview(id: string, update: Partial<BatchReviewMetadata>): Promise<boolean> {
+  const db = await open();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('results', 'readwrite'), store = tx.objectStore('results');
+    let found = false;
+    const request = store.get(id);
+    request.onsuccess = () => {
+      const record = request.result as StoredBatchResult | undefined;
+      if (!record) return;
+      found = true;
+      store.put({ ...record, ...update });
+    };
+    tx.oncomplete = () => resolve(found);
+    tx.onerror = tx.onabort = () => reject(new Error('复核状态未能保存，请检查本地存储后重试。'));
+  });
+}
 
 export function blobBase64(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {

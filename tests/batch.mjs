@@ -156,7 +156,10 @@ try {
     await dialog.getByTestId('batch-trial').click(); await idle();
     assert.equal(await rows().first().getAttribute('data-status'), 'skipped');
     assert.match(await rows().first().textContent(), /未产生像素变化/);
-    assert.equal((await records()).length, 1);
+    const retained = await records();
+    assert.equal(retained.length, 2, 'A skipped zero-parameter attempt must retain the previous completed result');
+    assert.equal(await dialog.getByTestId('batch-download-one').isDisabled(), false);
+    assert.match(await rows().first().textContent(), /上次完成结果仍保留/);
     await dialog.getByTestId('batch-file-input').setInputFiles(Array.from({ length: 101 }, (_, index) => ({ ...empty, name: `over-limit-${index}.png` })));
     assert.equal(await rows().count(), 2);
     await page.waitForFunction(() => document.querySelector('.toast')?.textContent.includes('最多 100 张'));
