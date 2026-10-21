@@ -17,4 +17,19 @@ describe('local project draft', () => {
     await expect(unpackProjectDraft({ version: 99 } as never)).rejects.toThrow('格式不兼容');
     await expect(unpackProjectDraft({ version: 1, assets: [], tree: { imageAsset: 7 } })).rejects.toThrow('缺少图片');
   });
+  it('round-trips body mask typed arrays and shared references through structured clone', async () => {
+    const mask = new Uint8ClampedArray([0, 1, 128, 255]);
+    const body = { mask: { width: 2, height: 2, data: mask } };
+    const project = { version: 1, activeId: '', documents: [], sessions: { body: { mask, detectedMask: mask, people: [{ body }], detectedBodies: [body] } }, masks: {}, savedAt: 1 } as unknown as ProjectDraft;
+    const packed = packProjectDraft(project);
+    const restored = await unpackProjectDraft(structuredClone(packed));
+    const session = restored.sessions.body as unknown as { mask: Uint8ClampedArray; detectedMask: Uint8ClampedArray };
+    expect(session.mask).toBeInstanceOf(Uint8ClampedArray);
+    expect([...session.mask]).toEqual([0, 1, 128, 255]);
+    expect(session.mask).toBe(session.detectedMask);
+    expect(session.mask).not.toBe(mask);
+    expect(restored.sessions.body.people[0].body).toBe(restored.sessions.body.detectedBodies![0]);
+    session.mask[0] = 99;
+    expect(mask[0]).toBe(0);
+  });
 });

@@ -18,8 +18,19 @@ let database: Promise<IDBDatabase> | undefined;
 /** Deduplicate full-size images shared by history and portrait baselines. No API settings are stored. */
 export function packProjectDraft(draft: ProjectDraft): PackedDraft {
   const assets: Blob[] = [], ids = new Map<string, number>();
+  const buffers = new WeakMap<Uint8ClampedArray, Uint8ClampedArray>();
+  const references = new WeakMap<object, unknown>();
   let bytes = 0;
   const walk = (value: unknown): unknown => {
+    // IndexedDB structured clone preserves typed arrays. Enumerating them as
+    // ordinary objects would lose .length and erase the restored body mask.
+    if (value instanceof Uint8ClampedArray) {
+      const cached = buffers.get(value);
+      if (cached) return cached;
+      bytes += value.byteLength;
+      if (bytes > MAX_BYTES) throw new Error('工程草稿超过 256 MB，请先导出并关闭部分照片。上次保存的草稿仍保留。');
+      const owned = value.slice(); buffers.set(value, owned); return owned;
+    }
     if (typeof value === 'string' && /^data:image\/(?:jpeg|png|webp);base64,/.test(value)) {
       let id = ids.get(value);
       if (id === undefined) {
@@ -34,8 +45,11 @@ export function packProjectDraft(draft: ProjectDraft): PackedDraft {
       }
       return { imageAsset: id };
     }
-    if (Array.isArray(value)) return value.map(walk);
-    if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, walk(item)]));
+    if (value && typeof value === 'object') {
+      if (references.has(value)) return references.get(value);
+      const copied = Array.isArray(value) ? value.map(walk) : Object.fromEntries(Object.entries(value).map(([key, item]) => [key, walk(item)]));
+      references.set(value, copied); return copied;
+    }
     return value;
   };
   return { version: 1, tree: walk(draft), assets };
@@ -44,6 +58,9 @@ export function packProjectDraft(draft: ProjectDraft): PackedDraft {
 export async function unpackProjectDraft(packed: PackedDraft): Promise<ProjectDraft> {
   if (!packed || packed.version !== 1 || !Array.isArray(packed.assets) || packed.assets.length > 250 || packed.assets.reduce((sum, item) => sum + (item instanceof Blob ? item.size : Infinity), 0) > MAX_BYTES) throw new Error('本地草稿格式不兼容或图片过大。');
   const images: string[] = [];
+  let restoredBytes = packed.assets.reduce((sum, item) => sum + item.size, 0);
+  const buffers = new WeakMap<Uint8ClampedArray, Uint8ClampedArray>();
+  const references = new WeakMap<object, unknown>();
   for (const blob of packed.assets) {
     if (!/^image\/(png|jpeg|webp)$/.test(blob.type)) throw new Error('本地草稿包含不支持的图片。');
     images.push(await new Promise<string>((resolve, reject) => {
@@ -51,13 +68,23 @@ export async function unpackProjectDraft(packed: PackedDraft): Promise<ProjectDr
     }));
   }
   const walk = (value: unknown): unknown => {
+    if (value instanceof Uint8ClampedArray) {
+      const cached = buffers.get(value);
+      if (cached) return cached;
+      restoredBytes += value.byteLength;
+      if (restoredBytes > MAX_BYTES) throw new Error('本地草稿超过安全内存上限。请保留原片重新导入。');
+      const owned = value.slice(); buffers.set(value, owned); return owned;
+    }
     if (value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length === 1 && 'imageAsset' in value) {
       const id = (value as { imageAsset: number }).imageAsset;
       if (!Number.isInteger(id) || !images[id]) throw new Error('本地草稿缺少图片，请保留原片重新导入。');
       return images[id];
     }
-    if (Array.isArray(value)) return value.map(walk);
-    if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, walk(item)]));
+    if (value && typeof value === 'object') {
+      if (references.has(value)) return references.get(value);
+      const copied = Array.isArray(value) ? value.map(walk) : Object.fromEntries(Object.entries(value).map(([key, item]) => [key, walk(item)]));
+      references.set(value, copied); return copied;
+    }
     return value;
   };
   const draft = walk(packed.tree) as ProjectDraft;

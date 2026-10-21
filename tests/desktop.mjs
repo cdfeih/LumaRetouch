@@ -206,7 +206,28 @@ try {
 
   await check('Electron 取消记住后 storage 不保存该 Key，重载会话后 Key 清空', async () => {
     assert.equal(await page.evaluate(key => JSON.stringify({ ...localStorage, ...sessionStorage }).includes(key), fakeKey), false);
+    const beforeReload = await currentImage();
+    const stay = await app.evaluate(async ({ BrowserWindow, dialog }) => {
+      const window = BrowserWindow.getAllWindows()[0];
+      globalThis.__lumaUnloadPrompts = [];
+      dialog.showMessageBoxSync = (_window, options) => { globalThis.__lumaUnloadPrompts.push(options); return 0; };
+      await new Promise(resolve => {
+        window.webContents.once('will-prevent-unload', () => setImmediate(resolve));
+        window.webContents.reload();
+      });
+      return { windows: BrowserWindow.getAllWindows().length, prompts: globalThis.__lumaUnloadPrompts };
+    });
+    assert.equal(stay.windows, 1);
+    assert.equal(stay.prompts.length, 1);
+    assert.deepEqual(stay.prompts[0].buttons, ['继续编辑', '确认离开']);
+    assert.equal(stay.prompts[0].defaultId, 0);
+    assert.equal(stay.prompts[0].cancelId, 0);
+    assert.equal(await currentImage(), beforeReload, '继续编辑必须保留当前像素');
+    await app.evaluate(({ dialog }) => {
+      dialog.showMessageBoxSync = (_window, options) => { globalThis.__lumaUnloadPrompts.push(options); return 1; };
+    });
     await page.reload({ waitUntil: 'domcontentloaded' });
+    assert.equal(await app.evaluate(() => globalThis.__lumaUnloadPrompts.length), 2, '确认离开必须实际经过原生确认');
     await page.getByRole('button', { name: '模型设置', exact: true }).first().click();
     await page.getByRole('button', { name: '兼容图像编辑接口', exact: true }).click();
     assert.equal(await page.locator('.secret-input input').inputValue(), '');

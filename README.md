@@ -66,7 +66,7 @@ Windows 验收包含本地模型、RAW 解码、测试服务传输和保存；An
 
 工作台变更后自动存当前站点 IndexedDB，也可点「立即保存」。成功后在同一浏览器、同一地址刷新续修，可恢复当前／原始编辑图、活动照片、撤销与重做历史、尺寸／比较底图、人像参数／识别与计算基准，以及每张照片的绿色编辑与红色保护蒙版。
 
-限制为 **256 MiB 图像资源、250 份独立图像／蒙版资源、最多 10 张工作台照片**。共享图像去重，250 指资源版本数而非照片数。权限、空间或数量超限时保留上次成功草稿并显示错误；最新修改未必保存，请及时导出。尚未提交的描述、调色滑块等界面输入不属于完整工程交换格式。
+限制为 **256 MiB 图片与分割数据、250 份独立图像／蒙版资源、最多 10 张工作台照片**。共享图像去重，250 指资源版本数而非照片数。权限、空间或数量超限时保留上次成功草稿并显示错误；最新修改未必保存，请及时导出。尚未提交的描述、调色滑块等界面输入不属于完整工程交换格式。
 
 云端添加内容的**临时完整画面／选区切换对象不恢复**；已接受当前图和历史会保存。刷新后不能继续切换同一次云返回的其他合成版本，也不会重调付费模型。
 
@@ -138,6 +138,7 @@ pnpm test
 node src/imaging/browser-smoke.mjs http://127.0.0.1:5178
 node tests/history-recovery.mjs
 node tests/project-draft.mjs
+node tests/project-body.mjs
 node tests/portrait-quality.mjs
 node tests/portrait-roi-large.mjs
 node tests/batch-workflow.mjs
@@ -148,6 +149,7 @@ node tests/desktop.mjs
 node --experimental-strip-types --test native/local-vision.test.ts
 node --test electron/http.test.cjs
 node --test electron/save.test.cjs
+node --test electron/unload.test.cjs
 ~~~
 
 既有相关回归：tests/integration.mjs、creative.mjs、ark-config.mjs、protection.mjs、protection-preview.mjs、free-add.mjs、key-storage.mjs、portrait.mjs、portrait-studio.mjs、portrait-details.mjs、dodge-burn.mjs、batch.mjs、workflow-quality.mjs，以及 src/portrait/render-smoke.mjs。报告在忽略目录 artifacts/。测试使用公开／合成图片、假 Key 和受控响应，不触发付费 API；通过数量不是云端质量评估。公开 fixture 来源见 tests/fixtures/README.md。

@@ -4,6 +4,7 @@ const { pathToFileURL } = require('node:url');
 const { writeFile } = require('node:fs/promises');
 const { nativeRequest } = require('./http.cjs');
 const { saveExport } = require('./save.cjs');
+const { installUnloadConfirmation } = require('./unload.cjs');
 
 let mainWindow;
 const active = new Map();
@@ -35,6 +36,7 @@ function createWindow() {
   mainWindow = new BrowserWindow({ width: 1440, height: 960, minWidth: 980, minHeight: 680, title: '光修 AI', backgroundColor: '#111217', autoHideMenuBar: true, show: process.env.LUMA_TEST_HEADLESS !== '1',
     webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, webSecurity: true, devTools: !app.isPackaged } });
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  installUnloadConfirmation(mainWindow, { dialog, onLeave: () => { for (const controller of active.values()) controller.abort(); } });
   mainWindow.webContents.on('will-navigate', (event, url) => {
     if (!(devUrl ? new URL(url).origin === new URL(devUrl).origin : url.split('#')[0] === indexUrl)) event.preventDefault();
   });

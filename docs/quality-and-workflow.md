@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | 人像质量与底图 | 21 项本地人像参数、固定基准重算、带尺寸和人像状态的历史恢复；逐脸原图 ROI、语义皮肤与解剖区域交集 | ROI 最长边 1600，大特写仍降采样；传统修饰加保守语义门控，不是商业中性灰网络或原生全分辨率毛孔工作流 |
 | 中性灰光影 | 多尺度亮度分解、保守提亮／压暗差值、纹理和五官保护、单张及批量方案 | 不生成新毛孔、不修复所有尺度纹理、不包办严重瑕疵；无可编辑中性灰图层／PSD |
-| 项目续修 | IndexedDB 自动草稿：当前／原始编辑图、历史／重做、尺寸与比较底图、人像基准和参数、每图红绿蒙版 | 最多 10 张、256 MiB 图像资源／250 份独立图像版本与蒙版；不是跨设备工程文件。云端临时 full／selection 切换对象不恢复 |
+| 项目续修 | IndexedDB 自动草稿：当前／原始编辑图、历史／重做、尺寸与比较底图、人像基准和参数、每图红绿蒙版 | 最多 10 张、256 MiB 图片与分割数据／250 份独立图像版本与蒙版；不是跨设备工程文件。云端临时 full／selection 切换对象不恢复 |
 | 批量复核与交付 | 100 张串行、先试一张、100%／并排同步查看、星标／复核筛选、预设 JSON／文本交换、64 MiB 自动 ZIP 分包 | 仍限 100 张 JPEG／PNG／WebP；无逐图场景分析、身份匹配或千张后台队列。原始 File 不跨刷新保存 |
 | RAW 基础转档 | LibRaw 0.22.1 完整传感器解码，真实 S9 24MP RW2；相机白平衡、去马赛克转 8bit sRGB PNG | 不是 16bit、ICC／ProPhoto、HDR 或 RAW 域二次显影；不等同厂商 JPEG／LUT。80 MiB／4000 万像素上限，其他机型与模式需验收 |
 | 本地调色与构图 | 曝光、白平衡偏移、高光阴影、八色 HSL、RGB 总曲线、裁剪／90°旋转／水平翻转 | 在 8bit sRGB 编辑图上操作，不恢复裁剪掉的高光细节；构图改变坐标后清空画笔 |
@@ -72,9 +72,9 @@ CC0 S9 24MP RW2 验收的原文件 SHA：
 
 ## 本轮验收入口与未验证范围
 
-0.3.0 最终源码已通过生产构建与 **277 项单元测试**；另有下列真实浏览器验收。所有云端合约检查使用受控响应，不消耗用户额度。
+0.3.0 最终源码已通过生产构建与 **278 项单元测试**；另有下列真实浏览器验收。所有云端合约检查使用受控响应，不消耗用户额度。
 
-- 历史与草稿：tests/history-recovery.mjs、tests/project-draft.mjs。
+- 历史与草稿：tests/history-recovery.mjs、tests/project-draft.mjs、tests/project-body.mjs。
 - ROI／语义与质量：tests/portrait-quality.mjs、tests/portrait-roi-large.mjs，及原 portrait／dodge-burn 回归。
 - 批量与交付：tests/batch-workflow.mjs、tests/batch.mjs，及 archive-parts／preset-transfer 单测。
 - 调色构图与点修：tests/editor-tools.mjs、tests/point-retouch-local.mjs、tests/point-retouch-selection.mjs。
