@@ -67,8 +67,9 @@ try {
   });
   await check('one-sentence cloud point edit preserves every pixel outside its selection', async () => {
     await page.getByRole('button', { name: '一句话云端点修', exact: true }).click();
+    await page.getByTestId('specialty-task-clothes-wrinkles').click();
+    assert.equal(requests, 0);
     await clickPhoto(.3, .5);
-    await page.getByRole('button', { name: '衣服祛褶皱', exact: true }).click();
     await page.getByRole('button', { name: '模型设置', exact: true }).first().click();
     await page.getByRole('button', { name: 'OpenAI', exact: true }).click();
     await page.getByPlaceholder('填写服务商提供的 API Key').fill('synthetic-ui-test-key');
@@ -83,6 +84,31 @@ try {
       return { outside, inside };
     }, { original, edited, mask });
     assert.equal(difference.outside, 0); assert.ok(difference.inside > 0); assert.equal(requests, 1);
+  });
+  await check('cloud specialty brush prepares instructions without uploading and keeps irregular selection boundaries', async () => {
+    const previousRequests = requests;
+    await page.getByTestId('specialty-task-neck-lines').click();
+    assert.equal(requests, previousRequests, 'choosing a specialty does not call AI');
+    assert.match(await page.locator('#prompt').inputValue(), /颈/);
+    await page.getByRole('button', { name: '涂选范围', exact: true }).click();
+    const box = await page.getByTestId('mask-canvas').boundingBox();
+    await page.mouse.move(box.x + box.width * .65, box.y + box.height * .35);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width * .65, box.y + box.height * .55, { steps: 8 });
+    await page.mouse.move(box.x + box.width * .78, box.y + box.height * .55, { steps: 8 });
+    await page.mouse.up();
+    const before = await current();
+    const mask = await page.getByTestId('mask-canvas').evaluate(canvas => canvas.toDataURL());
+    await page.getByRole('button', { name: '开始云端点修', exact: true }).click();
+    const edited = await current();
+    const difference = await page.evaluate(async ({ before, edited, mask }) => {
+      const read = async src => { const image = new Image(); image.src = src; await image.decode(); const c = document.createElement('canvas'); c.width = 640; c.height = 480; const x = c.getContext('2d'); x.drawImage(image, 0, 0, 640, 480); return x.getImageData(0, 0, 640, 480).data; };
+      const [a, b, m] = await Promise.all([read(before), read(edited), read(mask)]); let outside = 0, inside = 0;
+      for (let i = 0; i < a.length; i += 4) if ([0,1,2,3].some(k => a[i+k] !== b[i+k])) { if (!m[i+3]) outside++; else inside++; }
+      return {outside, inside};
+    }, {before, edited, mask});
+    assert.equal(difference.outside, 0); assert.ok(difference.inside > 0);
+    assert.equal(requests, previousRequests + 1);
   });
   await mkdir('artifacts/editor-tools', { recursive: true });
   await page.screenshot({ path: 'artifacts/editor-tools/desktop.png', fullPage: true });

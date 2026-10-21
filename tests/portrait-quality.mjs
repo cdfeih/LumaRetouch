@@ -17,7 +17,7 @@ await context.routeWebSocket('**/*', socket => socket.close());
 const page = await context.newPage(); page.setDefaultTimeout(90000);
 page.on('pageerror', error => errors.push(error.message)); page.on('dialog', dialog => dialog.accept());
 const settled = async () => { await page.locator('.busy-overlay').waitFor({ state: 'hidden' }); await page.waitForFunction(() => document.querySelector('.working-image')?.complete); };
-const apply = async () => { await page.getByRole('button', { name: '开始一键自然精修', exact: true }).click(); await settled(); };
+const apply = async () => { await page.getByRole('button', { name: '应用当前人像参数', exact: true }).click(); await settled(); };
 try {
   await page.goto(base);
   await page.getByTestId('photo-input').setInputFiles({ name: 'public-quality.jpg', mimeType: 'image/jpeg', buffer: await readFile('tests/fixtures/mediapipe-portrait.jpg') });
@@ -126,11 +126,11 @@ try {
   const beforeFailure = await failedPage.locator('.working-image').getAttribute('src');
   await failedPage.getByTestId('tool-natural').click(); await failedPage.getByRole('button', { name: '全部归零', exact: true }).click();
   await failedPage.getByRole('slider', { name: '肤色提亮', exact: true }).fill('100');
-  await failedPage.getByRole('button', { name: '开始一键自然精修', exact: true }).click(); await failedPage.locator('.busy-overlay').waitFor({ state: 'hidden' });
+  await failedPage.getByRole('button', { name: '应用当前人像参数', exact: true }).click(); await failedPage.locator('.busy-overlay').waitFor({ state: 'hidden' });
   assert.equal(await failedPage.locator('.working-image').getAttribute('src'), beforeFailure, 'missing semantic model must preserve the image');
   assert.ok(blockedModels > 0); await failedPage.getByText(/本地皮肤分割模型加载失败/).waitFor();
   blockSemantic = false;
-  await failedPage.getByRole('button', { name: '开始一键自然精修', exact: true }).click(); await failedPage.locator('.busy-overlay').waitFor({ state: 'hidden' });
+  await failedPage.getByRole('button', { name: '应用当前人像参数', exact: true }).click(); await failedPage.locator('.busy-overlay').waitFor({ state: 'hidden' });
   assert.notEqual(await failedPage.locator('.working-image').getAttribute('src'), beforeFailure, 'a failed model load can be retried');
   checks.push({ name: '语义模型缺失时保留原照并明确报错，资源恢复后可重试', blockedModels });
   await failedContext.close();

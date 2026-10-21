@@ -16,7 +16,7 @@ try {
   await settled();
   await page.getByRole('button', { name: '全部归零', exact: true }).click();
   await page.getByRole('slider', { name: '肤色提亮', exact: true }).fill('60');
-  await page.getByRole('button', { name: '开始一键自然精修', exact: true }).click(); await settled();
+  await page.getByRole('button', { name: '应用当前人像参数', exact: true }).click(); await settled();
   const retouched = await page.locator('.working-image').getAttribute('src');
   await page.getByRole('button', { name: '保护画笔', exact: true }).click();
   const box = await page.getByTestId('mask-canvas').boundingBox();
@@ -36,7 +36,7 @@ try {
   await page.getByRole('slider', { name: '曝光', exact: true }).fill('0.5');
   await page.getByRole('button', { name: '应用调色', exact: true }).click(); await settled();
   await page.getByRole('button', { name: '撤销编辑', exact: true }).click();
-  await page.getByRole('button', { name: '开始一键自然精修', exact: true }).click(); await settled();
+  await page.getByRole('button', { name: '应用当前人像参数', exact: true }).click(); await settled();
   // The red patch is outside the face; restoring the baseline must avoid adding another retouch pass.
   assert.equal(await page.locator('.working-image').getAttribute('src'), retouched);
   assert.deepEqual(errors, []);

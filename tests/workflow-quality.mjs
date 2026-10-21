@@ -49,7 +49,7 @@ async function settled() {
   });
 }
 async function current() { await settled(); return page.locator('.working-image').getAttribute('src'); }
-async function runNatural() { await page.getByRole('button', { name: '开始一键自然精修', exact: true }).click(); await settled(); }
+async function runNatural() { await page.getByRole('button', { name: '应用当前人像参数', exact: true }).click(); await settled(); }
 async function selectPhoto(name) { await page.getByRole('button', { name: `选择照片 ${name}`, exact: true }).click(); await settled(); }
 async function importPng(source, name) {
   await page.getByTestId('photo-input').setInputFiles({ name, mimeType: 'image/png', buffer: Buffer.from(source.split(',')[1], 'base64') });

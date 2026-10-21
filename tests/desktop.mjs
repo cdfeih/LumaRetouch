@@ -242,7 +242,7 @@ try {
     const before = await currentImage();
     const cornerBefore = await readPixel(before);
     const callsBefore = requests.length;
-    await page.getByRole('button', { name: '开始一键自然精修', exact: true }).click();
+    await page.getByRole('button', { name: '应用当前人像参数', exact: true }).click();
     await page.waitForFunction(() => document.querySelector('.document-tag')?.textContent === '1 次编辑', undefined, { timeout: 30000 });
     await waitForPhoto();
     const after = await currentImage();

@@ -23,7 +23,7 @@ await context.route('**/*', async route => {
   externalRequests.push(url); return route.abort('blockedbyclient');
 });
 
-const run = () => page.getByRole('button', { name: '开始一键自然精修', exact: true }).click();
+const run = () => page.getByRole('button', { name: '应用当前人像参数', exact: true }).click();
 const slider = name => page.getByRole('slider', { name, exact: true });
 const person = n => page.getByRole('button', { name: `人物 ${n}`, exact: true });
 const allPeople = () => page.getByRole('button', { name: '所有人', exact: true });

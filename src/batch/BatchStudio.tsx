@@ -7,12 +7,15 @@ import { loadPortraitPresets, PRESET_STORAGE_KEY } from '../portrait/presets';
 import { DEFAULT_PORTRAIT_SETTINGS, normalizePortraitSettings, PORTRAIT_FIELDS, ZERO_PORTRAIT_SETTINGS } from '../portrait/settings';
 import type { PortraitSettings } from '../portrait/settings';
 import { processBatchPortrait } from './engine';
+import type { BatchPortraitResult } from './engine';
 import { runSequentialBatch } from './queue';
 import type { BatchQueueSnapshot, BatchQueueStatus } from './queue';
 import { createArchiveParts } from './archive-parts';
 import { blobBase64, deleteBatchResult, getBatchResult, listBatchResults, saveBatchResult, updateBatchReview } from './storage';
 import type { BatchReviewMetadata, BatchReviewState, StoredBatchResult } from './storage';
 import { exportPortraitPresetFile, importPortraitPresetFile, PRESET_FILE_LIMIT, savePresetFile } from './preset-transfer';
+import { BATCH_AUTOMATIC_PROFILES } from './automatic-types';
+import type { BatchAutomaticProfile, BatchAutomaticSummary } from './automatic-types';
 import './BatchStudio.css';
 
 export interface BatchStudioProps {
@@ -26,14 +29,16 @@ type BatchRow = {
   id: string; name: string; status: BatchQueueStatus; reason?: string; resultId?: string;
   width?: number; height?: number; faceCount?: number; bodyCount?: number; warnings: string[];
   starred: boolean; review: BatchReviewState;
+  automatic?: BatchAutomaticSummary; lastAnalysis?: BatchAutomaticSummary;
 };
 type JobItem = { id: string; name: string; file?: File; previousResultId?: string };
 type JobResult = {
   changed: boolean; reason?: string; resultId?: string; width: number; height: number;
   faceCount: number; bodyCount: number; warnings: string[];
+  automatic?: BatchAutomaticSummary;
 };
 type RunSummary = { total: number; done: number; succeeded: number; skipped: number; failed: number; cancelled: number };
-type PresetOption = { id: string; name: string; description: string; settings: PortraitSettings };
+type PresetOption = { id: string; name: string; description: string; settings: PortraitSettings; automaticProfile?: BatchAutomaticProfile };
 const MAX_FILES = 100;
 const PAGE_SIZE = 25;
 type BatchFilter = 'all' | 'starred' | BatchReviewState | 'failed';
@@ -66,12 +71,13 @@ const storedMetadata = (record: StoredBatchResult): BatchRow => ({
   width: record.width, height: record.height, faceCount: record.faceCount, bodyCount: record.bodyCount,
   warnings: record.warnings || [],
   starred: record.starred === true, review: record.review === 'approved' || record.review === 'redo' ? record.review : 'pending',
+  automatic: record.automatic,
 });
 
 export function BatchStudio({ open, onClose, onBusy, initialSettings, notify }: BatchStudioProps) {
   const [rows, setRows] = useState<BatchRow[]>([]);
   const [selected, setSelected] = useState(new Set<string>());
-  const [presetId, setPresetId] = useState('natural');
+  const [presetId, setPresetId] = useState('smart:natural');
   const [personal, setPersonal] = useState(loadPortraitPresets);
   const [restoring, setRestoring] = useState(true);
   const [storageError, setStorageError] = useState('');
@@ -102,11 +108,12 @@ export function BatchStudio({ open, onClose, onBusy, initialSettings, notify }: 
   const rowsRef = useRef(rows); rowsRef.current = rows;
   const notifyRef = useRef(notify); notifyRef.current = notify;
 
-  const presets = useMemo(() => [...RECOMMENDED,
+  const presets: PresetOption[] = useMemo(() => [...BATCH_AUTOMATIC_PROFILES.map(profile => ({ id: `smart:${profile.id}`, name: profile.name,
+    description: profile.description, settings: { ...ZERO_PORTRAIT_SETTINGS }, automaticProfile: profile.id })), ...RECOMMENDED,
     { id: 'current', name: '当前单张参数', description: '使用单张人像精修当前参数，应用到每张照片内的所有识别人物。', settings: normalizePortraitSettings(initialSettings) },
     ...personal.map(preset => ({ id: `personal:${preset.id}`, name: preset.name, description: '已保存在本机的个人预设，包含肤色、塑形与细节参数。', settings: preset.settings })),
   ], [initialSettings, personal]);
-  const preset = presets.find(value => value.id === presetId) || RECOMMENDED[0];
+  const preset = presets.find(value => value.id === presetId) || presets[0];
   const selectedRows = rows.filter(row => selected.has(row.id));
   const selectedOriginals = selectedRows.filter(row => files.current.has(row.id));
   const selectedResults = selectedRows.filter(row => row.resultId);
@@ -149,7 +156,7 @@ export function BatchStudio({ open, onClose, onBusy, initialSettings, notify }: 
   }, []);
   useEffect(() => {
     if (presets.some(value => value.id === presetId)) return;
-    setPresetId('natural');
+    setPresetId('smart:natural');
   }, [presets, presetId]);
 
   useEffect(() => {
@@ -209,6 +216,7 @@ export function BatchStudio({ open, onClose, onBusy, initialSettings, notify }: 
     const targets = mode === 'trial' ? candidates.filter(row => files.current.has(row.id)).slice(0, 1) : candidates;
     if (!targets.some(row => files.current.has(row.id))) { notify('请先导入并选中原图。本地恢复记录没有原图，只能预览和导出已有结果。', true); return; }
     const settings = normalizePortraitSettings(preset.settings);
+    const automaticProfile = preset.automaticProfile;
     const items: JobItem[] = targets.map(row => ({ id: row.id, name: row.name, file: files.current.get(row.id), previousResultId: row.resultId }));
     const controller = new AbortController();
     const unaccepted = new Set<string>();
@@ -239,8 +247,9 @@ export function BatchStudio({ open, onClose, onBusy, initialSettings, notify }: 
         if (!entry) return row;
         const result = entry.result;
         return { ...row, status: entry.status, reason: entry.error || entry.reason,
+          lastAnalysis: result?.automatic || (entry.status === 'pending' || entry.status === 'running' ? undefined : row.lastAnalysis),
           ...(result?.resultId ? { resultId: result.resultId, review: 'pending' as const, width: result.width, height: result.height,
-            faceCount: result.faceCount, bodyCount: result.bodyCount, warnings: result.warnings } : {}),
+            faceCount: result.faceCount, bodyCount: result.bodyCount, warnings: result.warnings, automatic: result.automatic } : {}),
         };
       }));
     };
@@ -250,12 +259,14 @@ export function BatchStudio({ open, onClose, onBusy, initialSettings, notify }: 
         if (!item.file) throw new Error('没有原图，请重新导入。');
         updateActivity(`正在读取 ${item.name}`);
         const photo = await loadPhoto(item.file); checkAbort(signal);
-        const result = await processBatchPortrait(photo.dataUrl, settings, { signal,
-          onProgress: value => updateActivity(`${item.name} · ${value.label}`),
-        });
+        let result: BatchPortraitResult, automatic: BatchAutomaticSummary | undefined;
+        if (automaticProfile) {
+          const intelligent = await (await import('./automatic')).processAutomaticBatchPortrait(photo.dataUrl, automaticProfile, { signal, onProgress: label => updateActivity(`${item.name} · ${label}`) });
+          result = intelligent; automatic = intelligent.automatic;
+        } else result = await processBatchPortrait(photo.dataUrl, settings, { signal, onProgress: value => updateActivity(`${item.name} · ${value.label}`) });
         checkAbort(signal);
-        if (!result.changed) return { changed: false, reason: result.warnings.join(' ') || '所选参数未产生像素变化，本张未处理。',
-          width: photo.width, height: photo.height, faceCount: result.faceCount, bodyCount: result.bodyCount, warnings: result.warnings };
+        if (!result.changed) return { changed: false, reason: result.warnings.join(' ') || (automatic ? '逐张分析后没有需要应用的调整，本张未处理。' : '所选参数未产生像素变化，本张未处理。'),
+          width: photo.width, height: photo.height, faceCount: result.faceCount, bodyCount: result.bodyCount, warnings: result.warnings, automatic };
         const blob = await (await fetch(result.image, { signal })).blob(); checkAbort(signal);
         const resultId = crypto.randomUUID();
         unaccepted.add(resultId);
@@ -263,9 +274,9 @@ export function BatchStudio({ open, onClose, onBusy, initialSettings, notify }: 
           updateActivity(`${item.name} · 正在保存本地结果`);
           await saveBatchResult({ id: resultId, name: item.name, blob, width: photo.width, height: photo.height,
             createdAt: Date.now(), settings: { ...settings }, faceCount: result.faceCount, bodyCount: result.bodyCount, warnings: result.warnings,
-            starred: rowsRef.current.find(row => row.id === item.id)?.starred === true, review: 'pending' });
+            starred: rowsRef.current.find(row => row.id === item.id)?.starred === true, review: 'pending', automatic });
           if (signal.aborted) { await removeLate(resultId); throw abortError(); }
-          return { changed: true, resultId, width: photo.width, height: photo.height, faceCount: result.faceCount, bodyCount: result.bodyCount, warnings: result.warnings };
+          return { changed: true, resultId, width: photo.width, height: photo.height, faceCount: result.faceCount, bodyCount: result.bodyCount, warnings: result.warnings, automatic };
         } catch (error) { if (signal.aborted) await removeLate(resultId); unaccepted.delete(resultId); throw error; }
       }, { signal: controller.signal,
         shouldSkip: item => !item.file ? '此本地记录没有原图，已跳过重新处理；已有结果仍可预览与导出。' : undefined,
@@ -391,6 +402,7 @@ export function BatchStudio({ open, onClose, onBusy, initialSettings, notify }: 
     try { importPresetText(await file.text()); } catch { notify('预设文件读取失败，请重新选择。', true); }
   }
   async function exportPresets(all = false) {
+    if (!all && preset.automaticProfile) { notify('智能方案会逐张生成不同参数；固定参数可在“手动预设”中导出。'); return; }
     const chosen = all ? personal : [{ id: 'current', name: preset.name, settings: preset.settings }];
     if (!chosen.length || locked) return;
     const text = exportPortraitPresetFile(chosen); setPresetText(text);
@@ -432,6 +444,17 @@ export function BatchStudio({ open, onClose, onBusy, initialSettings, notify }: 
     </div>;
   }
 
+  function renderAutomaticSummary(analysis: BatchAutomaticSummary, applied: boolean) {
+    const name = BATCH_AUTOMATIC_PROFILES.find(profile => profile.id === analysis.profile)?.name || '智能分析';
+    return <details className="batch-automatic-summary" data-testid={applied ? 'batch-applied-plan' : 'batch-skipped-plan'}>
+      <summary>{applied ? '已应用的逐张智能计划' : '本轮分析 · 未替换原有成片'}<span>{name} · {analysis.subjects.length} 张脸 · 曝光 {analysis.exposure > 0 ? '+' : ''}{analysis.exposure.toFixed(1)} EV</span></summary>
+      <p>{analysis.summary}</p>
+      {analysis.steps.length > 0 && <ol>{analysis.steps.map((step, index) => <li key={`${index}:${step}`}>{step}</li>)}</ol>}
+      {analysis.subjects.map((subject, index) => <div className="batch-subject-plan" key={`${index}:${subject.label}`}><strong>{subject.label}</strong><p>{PORTRAIT_FIELDS.filter(field => subject.settings[field.key] !== 0).map(field => `${field.label} ${subject.settings[field.key]}${field.min < 0 ? '' : '%'}`).join(' · ') || '保持原有皮肤状态，不叠加修饰'}</p></div>)}
+      <p className="batch-help">基于本地人脸定位与像素统计安排修饰；小脸、遮挡和复杂光线仍需人工检查。自动计划不调整轮廓，不做年龄、性别或身份分类。</p>
+    </details>;
+  }
+
   return <div ref={container} className="batch-studio" hidden={!open} role="dialog" aria-modal="true" aria-labelledby="batch-title" data-testid="batch-studio"
     onKeyDown={event => {
       event.stopPropagation();
@@ -444,7 +467,7 @@ export function BatchStudio({ open, onClose, onBusy, initialSettings, notify }: 
       }
     }}>
     <div className="batch-window">
-      <header className="batch-header"><div><span className="batch-eyebrow">LOCAL PORTRAIT WORKFLOW</span><h2 id="batch-title">批量人像精修</h2><p>先试一张，再把同一套参数应用到整组照片。</p></div><div className="batch-header-actions">{busy && <button ref={cancelButton} className="batch-header-cancel" data-testid="batch-cancel" onClick={() => { job.current?.abort(); setActivity('正在取消，保留此前已完成结果…'); }}><Square size={12} />取消当前操作</button>}<button ref={closeButton} className="batch-icon" aria-label="关闭批量精修" disabled={busy} onClick={onClose}><X size={22} /></button></div></header>
+      <header className="batch-header"><div><span className="batch-eyebrow">LOCAL PORTRAIT WORKFLOW</span><h2 id="batch-title">批量人像精修</h2><p>先试一张；智能方案逐张安排修饰，手动预设统一应用参数。</p></div><div className="batch-header-actions">{busy && <button ref={cancelButton} className="batch-header-cancel" data-testid="batch-cancel" onClick={() => { job.current?.abort(); setActivity('正在取消，保留此前已完成结果…'); }}><Square size={12} />取消当前操作</button>}<button ref={closeButton} className="batch-icon" aria-label="关闭批量精修" disabled={busy} onClick={onClose}><X size={22} /></button></div></header>
       <ol className="batch-steps" aria-label="批量精修四步"><li><b>1</b>添加原图</li><li><b>2</b>选择参数</li><li><b>3</b>先试一张</li><li><b>4</b>处理并导出</li></ol>
       <div className="batch-content">
         <section className="batch-setup" aria-label="批量参数">
@@ -452,24 +475,25 @@ export function BatchStudio({ open, onClose, onBusy, initialSettings, notify }: 
           <input ref={input} className="hidden-input" type="file" accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp" multiple data-testid="batch-file-input" onChange={event => importFiles(event.target.files)} />
           <button className="batch-import" disabled={locked || rows.length >= MAX_FILES} onClick={() => input.current?.click()}><FolderPlus size={24} /><strong>添加 JPEG / PNG / WebP</strong><span>最多 100 张，每张不超过 30 MB</span></button>
           {selectedBytes > 0 && <p className="batch-help">本次原图约 {(selectedBytes / 1024 / 1024).toFixed(1)} MiB，处理时需要额外内存；手机建议先用少量照片试修。列表每页 {PAGE_SIZE} 张。</p>}
-          <div className="batch-step-title"><span>02</span><h3>选择一套参数</h3></div>
-          <label className="batch-select"><span>批量预设</span><select data-testid="batch-preset" value={presetId} disabled={locked} onChange={event => setPresetId(event.target.value)}><optgroup label="推荐 · 默认不塑形">{RECOMMENDED.map(value => <option key={value.id} value={value.id}>{value.name}</option>)}</optgroup><optgroup label="我的参数"><option value="current">当前单张参数</option>{personal.map(value => <option key={value.id} value={`personal:${value.id}`}>{value.name}</option>)}</optgroup></select></label>
+          <div className="batch-step-title"><span>02</span><h3>选择处理方式</h3></div>
+          <label className="batch-select"><span>智能方案 / 手动预设</span><select data-testid="batch-preset" value={presetId} disabled={locked} onChange={event => setPresetId(event.target.value)}><optgroup label="智能 · 逐张分析，不塑形">{BATCH_AUTOMATIC_PROFILES.map(value => <option key={value.id} value={`smart:${value.id}`}>{value.name}</option>)}</optgroup><optgroup label="手动推荐 · 固定参数">{RECOMMENDED.map(value => <option key={value.id} value={value.id}>{value.name}</option>)}</optgroup><optgroup label="我的固定参数"><option value="current">当前单张参数</option>{personal.map(value => <option key={value.id} value={`personal:${value.id}`}>{value.name}</option>)}</optgroup></select></label>
           <p className="batch-help">{preset.description}</p>
-          <details className="batch-parameters"><summary>查看本次 {PORTRAIT_FIELDS.length} 项参数</summary><div>{PORTRAIT_FIELDS.map(field => <span key={field.key}>{field.label}<b>{preset.settings[field.key]}</b></span>)}</div></details>
+          {preset.automaticProfile ? <div className="batch-intelligent-note" data-testid="batch-smart-description"><strong>逐张分析，逐脸安排修饰</strong><p>照片亮度检查 → 人脸与皮肤统计 → 保守曝光 → 肤色与皮肤修饰。具体参数完成分析后显示在成片计划里，不套用第一张照片的数值。</p><p>默认不塑形。识别不可靠时会保守处理并说明原因；不保证自动修好严重痘痕、皱纹或复杂阴影。</p></div>
+            : <details className="batch-parameters"><summary>查看本次 {PORTRAIT_FIELDS.length} 项固定参数</summary><div>{PORTRAIT_FIELDS.map(field => <span key={field.key}>{field.label}<b>{preset.settings[field.key]}</b></span>)}</div></details>}
           <details className="batch-preset-transfer"><summary>预设导入与分享</summary>
             <input ref={presetInput} className="hidden-input" type="file" accept=".json,application/json" data-testid="batch-preset-file" onChange={event => void importPresetFile(event.target.files?.[0])} />
-            <div className="batch-transfer-actions"><button disabled={locked} onClick={() => presetInput.current?.click()}>导入 JSON 预设</button><button disabled={locked} onClick={() => void exportPresets()}>导出当前参数</button><button disabled={locked || !personal.length} onClick={() => void exportPresets(true)}>导出全部个人预设</button></div>
-            <p className="batch-help">只含人像参数，不含照片、人物或密钥。重名自动编号，不覆盖已有预设；最多 20 项。</p>
+            <div className="batch-transfer-actions"><button disabled={locked} onClick={() => presetInput.current?.click()}>导入 JSON 预设</button><button disabled={locked || Boolean(preset.automaticProfile)} onClick={() => void exportPresets()}>导出当前参数</button><button disabled={locked || !personal.length} onClick={() => void exportPresets(true)}>导出全部个人预设</button></div>
+            <p className="batch-help">只分享固定人像参数，不含照片、人物或密钥。智能方案会逐张生成参数，可查看各张成片计划。重名自动编号，不覆盖已有预设；最多 20 项。</p>
             <textarea aria-label="人像预设 JSON 内容" value={presetText} onChange={event => setPresetText(event.target.value)} maxLength={PRESET_FILE_LIMIT} disabled={locked} placeholder="也可粘贴光修导出的 JSON；导出文件不可用时，可复制这里的内容保存。" />
             <div className="batch-transfer-actions"><button disabled={locked || !presetText.trim()} onClick={() => importPresetText(presetText)}>导入粘贴内容</button><button disabled={locked || !presetText.trim()} onClick={() => {
               void navigator.clipboard?.writeText(presetText).then(() => notify('预设内容已复制。')).catch(() => notify('复制失败，请长按或全选文本后手动复制。', true));
               if (!navigator.clipboard) notify('请长按或全选文本后手动复制。');
             }}>复制预设内容</button></div>
           </details>
-          <div className="batch-note"><Check size={16} /><p>本机处理，不需要 API Key，不上传照片。每张中的所有识别人物共用这套参数，不进行跨照片身份匹配，也不会搬用单张编辑器的红绿画笔。</p></div>
+          <div className="batch-note"><Check size={16} /><p>本机处理，不需要 API Key，不上传照片。{preset.automaticProfile ? '每张单独分析，各张脸可使用不同的保守修饰参数。' : '每张中的所有识别人物共用这套固定参数。'}不进行跨照片身份匹配，也不会搬用单张编辑器的红绿画笔。</p></div>
           <div className="batch-step-title"><span>03</span><h3>试修与处理</h3></div>
           <div className="batch-run-buttons"><button className="batch-secondary" data-testid="batch-trial" disabled={locked || !selectedOriginals.length || Boolean(storageError)} onClick={() => void run('trial')}><Play size={15} />先试 1 张</button><button className="batch-primary" data-testid="batch-run" disabled={locked || !selectedOriginals.length || Boolean(storageError)} onClick={() => void run('selected')}><Check size={15} />处理选中（{selectedRows.length}）</button><button className="batch-secondary" data-testid="batch-retry" disabled={locked || !selectedOriginals.some(row => row.status === 'failed' || row.status === 'cancelled') || Boolean(storageError)} onClick={() => void run('retry')}><RotateCcw size={14} />重试选中失败 / 取消项</button></div>
-          <p className="batch-help">每次都从导入的原图重新计算，不叠加上次精修。失败后继续下一张，不会自动重试；塑形部位不完整时会明确失败。</p>
+          <p className="batch-help">每次都从导入的原图重新{preset.automaticProfile ? '分析和计算' : '计算'}，不叠加上次精修。失败后继续下一张，不会自动重试；{preset.automaticProfile ? '智能方案默认保持轮廓，完成后请用 100%细节复核。' : '塑形部位不完整时会明确失败。'}</p>
           <div className="batch-step-title"><span>04</span><h3>导出已完成结果</h3></div>
           <label className="batch-select"><span>导出格式</span><select aria-label="批量导出格式" value={format} disabled={locked} onChange={event => setFormat(event.target.value as 'jpeg' | 'png')}><option value="jpeg">JPEG · 适合分享，文件较小</option><option value="png">PNG · 保留合成像素，文件较大</option></select></label>
           <button className="batch-primary batch-wide" data-testid="batch-download-zip" disabled={locked || !selectedRows.length || selectedResults.length !== selectedRows.length} onClick={() => void download()}><Download size={16} />导出选中 ZIP（{selectedResults.length}）</button>
@@ -494,11 +518,13 @@ export function BatchStudio({ open, onClose, onBusy, initialSettings, notify }: 
             </div>
             {preview && <div className="batch-preview-footer"><span>{preview.width && preview.height ? `${preview.width.toLocaleString()} × ${preview.height.toLocaleString()} px` : '从原图处理，保持原尺寸'}{preview.faceCount !== undefined ? ` · ${preview.faceCount} 张人脸` : ''}</span><button data-testid="batch-download-one" disabled={locked || !preview.resultId} onClick={() => void download(preview)}><Download size={14} />下载这一张</button></div>}
             {preview?.resultId && <label className="batch-preview-review">当前成片复核<select aria-label="当前成片复核状态" value={preview.review} disabled={locked} onChange={event => void mark([preview], { review: event.target.value as BatchReviewState })}>{Object.entries(REVIEW_TEXT).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>}
+            {preview?.automatic && renderAutomaticSummary(preview.automatic, true)}
+            {preview?.status === 'skipped' && preview.lastAnalysis && renderAutomaticSummary(preview.lastAnalysis, false)}
           </div>
           <div className="batch-photo-list" aria-label="批量照片列表">{displayedRows.length ? displayedRows.map(row => <div key={row.id} className={`batch-row ${previewId === row.id ? 'batch-row-active' : ''}`} data-testid={`batch-row-${row.id}`} data-status={row.status}>
             <input type="checkbox" checked={selected.has(row.id)} aria-label={`选择 ${row.name}`} disabled={locked} onChange={() => setSelected(previous => { const next = new Set(previous); if (next.has(row.id)) next.delete(row.id); else next.add(row.id); return next; })} />
             <button className="batch-star" aria-label={`${row.starred ? '取消' : '添加'}星标 ${row.name}`} aria-pressed={row.starred} disabled={locked} onClick={() => void mark([row], { starred: !row.starred })}><Star size={15} fill={row.starred ? 'currentColor' : 'none'} /></button>
-            <button className="batch-row-main" disabled={busy} onClick={() => { setPreviewId(row.id); setPreviewMode(row.resultId ? 'result' : 'original'); }}><span className="batch-row-name">{row.name}{row.resultId && <i className={`batch-review-state batch-review-${row.review}`}>{REVIEW_TEXT[row.review]}</i>}</span><small>{files.current.has(row.id) ? '原图可用 · 每次从原图重算' : '本地恢复结果 · 无原图，不可重新处理'}{row.resultId && row.status !== 'succeeded' ? ' · 上次完成结果仍保留' : ''}</small>{row.reason && <p className={row.status === 'failed' ? 'batch-error-text' : ''}>{row.reason}</p>}{row.warnings.map((warning, index) => <p key={index}>{warning}</p>)}</button><span className={`batch-status batch-status-${row.status}`}>{row.status === 'running' && <LoaderCircle size={12} className="batch-spin" />}{STATUS_TEXT[row.status]}</span>
+            <button className="batch-row-main" disabled={busy} onClick={() => { setPreviewId(row.id); setPreviewMode(row.resultId ? 'result' : 'original'); }}><span className="batch-row-name">{row.name}{row.resultId && <i className={`batch-review-state batch-review-${row.review}`}>{REVIEW_TEXT[row.review]}</i>}</span><small>{files.current.has(row.id) ? '原图可用 · 每次从原图重算' : '本地恢复结果 · 无原图，不可重新处理'}{row.automatic ? ' · 逐张智能方案' : row.resultId ? ' · 手动固定预设' : ''}{row.resultId && row.status !== 'succeeded' ? ' · 上次完成结果仍保留' : ''}</small>{row.reason && <p className={row.status === 'failed' ? 'batch-error-text' : ''}>{row.reason}</p>}{row.warnings.map((warning, index) => <p key={index}>{warning}</p>)}</button><span className={`batch-status batch-status-${row.status}`}>{row.status === 'running' && <LoaderCircle size={12} className="batch-spin" />}{STATUS_TEXT[row.status]}</span>
           </div>) : <div className="batch-empty"><ImageIcon size={28} /><p>{rows.length ? '这个筛选下没有照片，换个筛选查看。' : '还没有照片，先添加几张原图试试。'}</p></div>}</div>
           {pageCount > 1 && <nav className="batch-pagination" aria-label="批量照片分页"><button disabled={locked || pageIndex === 0} onClick={() => setPageIndex(value => value - 1)}>上一页</button><span>第 {pageIndex + 1} / {pageCount} 页 · 每页 {PAGE_SIZE} 张</span><button disabled={locked || pageIndex >= pageCount - 1} onClick={() => setPageIndex(value => value + 1)}>下一页</button></nav>}
           {rows.length > 0 && <div className="batch-list-footer"><span>已选 {selectedRows.length} 张 · 可处理原图 {selectedOriginals.length} 张</span><button disabled={locked} onClick={() => void remove(true)}>清空列表与本地结果</button></div>}

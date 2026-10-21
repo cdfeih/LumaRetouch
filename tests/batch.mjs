@@ -49,6 +49,7 @@ try {
   await page.goto(baseUrl, { waitUntil: 'networkidle' });
   await page.getByTestId('open-batch').click(); await dialog.waitFor({ state: 'visible' });
   await page.waitForFunction(() => !document.querySelector('.batch-studio')?.textContent.includes('正在恢复本地结果记录'));
+  await dialog.getByTestId('batch-preset').selectOption('natural'); // Explicit fixed-preset compatibility suite.
   const portrait = { name: 'public-portrait.jpg', mimeType: 'image/jpeg', buffer: await readFile('tests/fixtures/mediapipe-portrait.jpg') };
   const blank = await page.evaluate(() => {
     const canvas = document.createElement('canvas'); canvas.width = 640; canvas.height = 480;
@@ -60,7 +61,7 @@ try {
 
   await check('四步入口、四套默认零塑形推荐，先试1张仅生成一个本地结果', async () => {
     assert.equal(await dialog.locator('.batch-steps li').count(), 4);
-    assert.equal(await dialog.getByTestId('batch-preset').locator('optgroup').first().locator('option').count(), 4);
+    assert.equal(await dialog.getByTestId('batch-preset').locator('optgroup[label="手动推荐 · 固定参数"] option').count(), 4);
     await dialog.getByTestId('batch-file-input').setInputFiles([portrait, { name: 'broken.png', mimeType: 'image/png', buffer: Buffer.from('invalid-local-png') }, empty]);
     assert.equal(await rows().count(), 3);
     await dialog.getByTestId('batch-trial').click(); await idle();
@@ -109,6 +110,7 @@ try {
     assert.equal(await dialog.getByRole('button', { name: '原图', exact: true }).isDisabled(), true);
     await dialog.getByTestId('batch-preview-image').waitFor({ state: 'visible' });
     await clearRows(); assert.deepEqual(await records(), []);
+    await dialog.getByTestId('batch-preset').selectOption('natural');
   });
 
   await check('取消保留先前成功结果、关闭和输入被锁，重试从原图继续', async () => {

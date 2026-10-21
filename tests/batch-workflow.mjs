@@ -48,6 +48,7 @@ function entries(bytes) {
 }
 try {
   await page.goto(baseUrl, { waitUntil: 'networkidle' }); await open();
+  await batch.getByTestId('batch-preset').selectOption('natural'); // Fixed-preset/review/export regression suite.
   const portrait = { name: 'review-portrait.jpg', mimeType: 'image/jpeg', buffer: await readFile('tests/fixtures/mediapipe-portrait.jpg') };
   let firstRecord;
   await check('批量100%原像素、并排对照与同步滚动，星标和复核可保存', async () => {

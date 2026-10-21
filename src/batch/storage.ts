@@ -1,4 +1,5 @@
 import type { PortraitSettings } from '../portrait/settings';
+import type { BatchAutomaticSummary } from './automatic-types';
 
 export type BatchReviewState = 'pending' | 'approved' | 'redo';
 export interface BatchReviewMetadata { starred: boolean; review: BatchReviewState }
@@ -6,6 +7,7 @@ export interface StoredBatchResult {
   id: string; name: string; blob: Blob; width: number; height: number; createdAt: number;
   settings: PortraitSettings; faceCount: number; bodyCount: number; warnings: string[];
   starred?: boolean; review?: BatchReviewState;
+  automatic?: BatchAutomaticSummary;
 }
 const DATABASE = 'luma-batch-results-v1';
 let database: Promise<IDBDatabase> | undefined;

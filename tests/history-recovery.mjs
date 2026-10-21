@@ -14,7 +14,7 @@ const input=page.getByTestId('photo-input');
 await input.setInputFiles({name:'public.jpg',mimeType:'image/jpeg',buffer:await readFile('tests/fixtures/mediapipe-portrait.jpg')});
 const settled=async()=>{await page.locator('.busy-overlay').waitFor({state:'hidden'});await page.waitForFunction(()=>document.querySelector('.working-image')?.complete);};
 const current=async()=>{await settled();return page.locator('.working-image').getAttribute('src');};
-const apply=async()=>{await page.getByRole('button',{name:'开始一键自然精修',exact:true}).click();await settled();};
+const apply=async()=>{await page.getByRole('button',{name:'应用当前人像参数',exact:true}).click();await settled();};
 await settled();await page.getByTestId('tool-natural').click();
 await page.getByRole('button',{name:'全部归零',exact:true}).click();
 await page.getByRole('slider',{name:'肤色提亮',exact:true}).fill('100');await apply();

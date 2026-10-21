@@ -29,6 +29,17 @@
 .batch-parameters > div { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; margin-top: 12px; }
 .batch-parameters span { display: flex; justify-content: space-between; gap: 8px; font-size: 10px; color: #92a784; }
 .batch-parameters b { font-weight: 500; color: #d0e5c0; }
+.batch-intelligent-note { padding: 12px; border: 1px solid #576f40; background: #25351c; border-radius: 8px; color: #c9e3b5; font-size: 11px; line-height: 1.8; }
+.batch-intelligent-note strong { display: block; font-size: 12px; }
+.batch-intelligent-note p { margin: 7px 0 0; font-size: 10px; color: #a8c094; }
+.batch-automatic-summary { padding: 12px; border-top: 1px solid #3d5330; background: #172611; color: #b9d2a7; font-size: 11px; line-height: 1.8; }
+.batch-automatic-summary summary { cursor: pointer; font-weight: 600; }
+.batch-automatic-summary summary span { display: block; font-size: 10px; font-weight: 400; color: #92b07d; }
+.batch-automatic-summary > p { margin: 10px 0; white-space: pre-wrap; }
+.batch-automatic-summary ol { padding-left: 21px; font-size: 10px; color: #94ad83; }
+.batch-subject-plan { border-top: 1px solid #334929; padding: 8px 0; font-size: 10px; }
+.batch-subject-plan strong { color: #cee4be; }
+.batch-subject-plan p { color: #a3bf91; margin: 4px 0 0; }
 .batch-note { display: flex; gap: 8px; margin-top: 14px; color: #9cbf84; }
 .batch-note svg { flex-shrink: 0; margin-top: 3px; }
 .batch-note p, .batch-storage-note { margin: 0; font-size: 10px; line-height: 1.85; }
