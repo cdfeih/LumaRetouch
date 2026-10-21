@@ -18,7 +18,12 @@ if (!existsSync(path.join(sdk, 'platforms/android-36'))) {
 env.ANDROID_HOME = sdk; env.ANDROID_SDK_ROOT = sdk;
 const cachedJava = path.join(os.homedir(), '.jdks/liberica-21.0.8');
 if (!env.JAVA_HOME && existsSync(cachedJava)) env.JAVA_HOME = cachedJava;
-if (env.JAVA_HOME) env.PATH = `${path.join(env.JAVA_HOME, 'bin')}${path.delimiter}${env.PATH || ''}`;
+if (env.JAVA_HOME) {
+  const pathKeys = Object.keys(env).filter((key) => key.toLowerCase() === 'path');
+  const inheritedPath = pathKeys.map((key) => env[key]).find(Boolean) || '';
+  for (const key of pathKeys) delete env[key];
+  env.PATH = `${path.join(env.JAVA_HOME, 'bin')}${path.delimiter}${inheritedPath}`;
+}
 function run(command, args, cwd) {
   const result = spawnSync(command, args, { cwd, env, stdio: 'inherit', shell: process.platform === 'win32' && command.endsWith('.bat') });
   if (result.error || result.status !== 0) { console.error(result.error?.message || 'Android 构建失败'); process.exit(result.status || 1); }
