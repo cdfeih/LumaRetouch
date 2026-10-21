@@ -3,7 +3,7 @@
  * 独立临时配置、隐藏窗口、本机 HTTP 测试服务，不调用任何付费模型。
  */
 import assert from 'node:assert/strict';
-import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import path from 'node:path';
 import { _electron as electron } from 'playwright';
@@ -15,7 +15,15 @@ const outputDir = path.join(root, executablePath ? 'artifacts/packaged-desktop-i
 const mainSource = await readFile(path.join(root, 'electron/main.cjs'), 'utf8');
 assert.ok(mainSource.includes("show: process.env.LUMA_TEST_HEADLESS !== '1'"), '运行前必须启用隐藏测试窗口，避免打扰用户。');
 await mkdir(outputDir, { recursive: true });
+const profileDirectory = await mkdtemp(path.join(outputDir, 'profile-'));
 const fakeKey = 'qa-desktop-local-only-key';
+// The UI defaults to 45% for these photographic finishing tools. Verify the
+// accepted composite rather than expecting the opaque model response directly.
+const originalPixel = [0x47, 0x6a, 0x9a, 255];
+const modelPixel = [0x4e, 0xa5, 0x7a, 255];
+const blended = (original, edited, amount) => original.map((value, index) => index === 3 ? 255 : Math.round(value * (1 - amount) + edited[index] * amount));
+const firstEditPixel = blended(originalPixel, modelPixel, 0.45);
+const secondEditPixel = blended(firstEditPixel, modelPixel, 0.45);
 const checks = [];
 const requests = [];
 const requestBodies = [];
@@ -87,10 +95,11 @@ const withTimeout = (promise, message) => Promise.race([
 
 try {
   app = await electron.launch({
-    ...(executablePath ? { executablePath, args: [] } : { args: ['.', `--user-data-dir=${path.join(outputDir, 'profile')}`] }),
+    ...(executablePath ? { executablePath, args: [`--user-data-dir=${profileDirectory}`] } : { args: ['.', `--user-data-dir=${profileDirectory}`] }),
     cwd: root, env, timeout: 20000,
   });
   page = await app.firstWindow();
+  page.on('dialog', dialog => dialog.type() === 'beforeunload' ? dialog.accept() : dialog.dismiss());
   page.on('pageerror', error => rendererErrors.push(error.message));
   // Electron 自身的 renderer 网络同样限制于本机。native HTTP 目标由下方 UI 配置。
   await page.route('**/*', async route => {
@@ -140,7 +149,7 @@ try {
     assert.match(requests[0].contentType, /^multipart\/form-data; boundary=/);
     assert.ok(requests[0].bytes > 1000);
     assert.notEqual(edited, original);
-    assert.deepEqual(await readPixel(edited), { width: 720, height: 480, rgba: [78, 165, 122, 255] });
+    assert.deepEqual(await readPixel(edited), { width: 720, height: 480, rgba: firstEditPixel });
     await page.screenshot({ path: path.join(outputDir, 'windows-edited.png'), fullPage: true });
   });
 
@@ -171,7 +180,7 @@ try {
     await page.getByRole('status').filter({ hasText: '照片已保存' }).waitFor();
     const saved = await readFile(savedPath);
     assert.equal(saved.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])), true);
-    assert.deepEqual(await readPixel(`data:image/png;base64,${saved.toString('base64')}`), { width: 720, height: 480, rgba: [78, 165, 122, 255] });
+    assert.deepEqual(await readPixel(`data:image/png;base64,${saved.toString('base64')}`), { width: 720, height: 480, rgba: firstEditPixel });
     assert.equal(await page.getByRole('dialog', { name: '导出你的照片' }).count(), 0);
   });
 
@@ -192,7 +201,7 @@ try {
     assert.ok(raw.includes('filename="reference.jpg"'));
     assert.ok(!raw.includes('name="mask"'), '未涂选的追色不应上传选区');
     assert.equal(requests.at(-1).authorized, true);
-    assert.deepEqual(await readPixel(await currentImage()), { width: 720, height: 480, rgba: [78, 165, 122, 255] });
+    assert.deepEqual(await readPixel(await currentImage()), { width: 720, height: 480, rgba: secondEditPixel });
   });
 
   await check('Electron 取消记住后 storage 不保存该 Key，重载会话后 Key 清空', async () => {
@@ -293,7 +302,12 @@ try {
     localStorage.clear();
     for (const [key, value] of Object.entries(storage)) localStorage.setItem(key, value);
   }, originalStorage).catch(() => {});
-  if (app) await app.close().catch(() => {});
+  if (app) {
+    // This instance always owns an isolated QA profile. Bypass the intentional
+    // unsaved-work prompt so failures cannot leave hidden test windows running.
+    await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().forEach(window => window.destroy())).catch(() => {});
+    await app.close().catch(() => {});
+  }
   server.closeAllConnections();
   await new Promise(resolve => server.close(resolve));
 }
